@@ -1,0 +1,19 @@
+# Ollama data (models ~243 GB)
+ollama/
+
+# Open WebUI data (DB, uploads, cache, vector_db)
+openwebui/
+
+# Monitoring SQLite DB (wird live generiert, nicht versioniert)
+monitoring/monitor.db
+monitoring/monitor.db-wal
+monitoring/monitor.db-shm
+
+# Generiertes Dashboard HTML (wird bei jedem Aufruf neu erzeugt)
+monitoring/dashboard.html
+
+# Environment (kann Secrets enthalten)
+.env
+
+# Claude Code Session-Daten
+.claude/
