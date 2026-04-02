@@ -163,7 +163,7 @@ sudo systemctl status ollama-dashboard     # Web-Dashboard auf Port 3002
 ### Details
 
 - **GPU Logger**: Pollt `nvidia-smi` alle 10s, schreibt nur bei Wertaenderung (Delta-Logging)
-- **Log Parser**: Folgt `docker compose logs ollama`, extrahiert Modell, Prompt-Tokens, Dauer, Client-IP
+- **Log Parser**: Folgt `docker compose logs ollama`, extrahiert Modell, Prompt-Tokens, Dauer, Client-IP. Erkennt sowohl offizielle Modelle (`library/`) als auch Community-Modelle (z.B. `alibayram/medgemma`).
 - **Retention**: Cronjob loescht Eintraege aelter 30 Tage (`/etc/cron.d/ollama-monitor-retention`)
 - **DB**: `/srv/Container/monitoring/monitor.db` (SQLite WAL mode)
 - **Dashboard**: Chart.js, wird bei jedem Seitenaufruf live aus SQLite generiert

@@ -18,8 +18,9 @@ GIN_PATTERN = re.compile(
 )
 
 # runner.name aus "finished setting up" oder "context for request finished"
+# Matcht sowohl library/ (offizielle Modelle) als auch user/repo (Community-Modelle)
 RUNNER_PATTERN = re.compile(
-    r'msg="(?:finished setting up|context for request finished)"\s+runner\.name=registry\.ollama\.ai/library/([^\s]+)'
+    r'msg="(?:finished setting up|context for request finished)"\s+runner\.name=registry\.ollama\.ai/(?:library/)?([^\s]+)'
 )
 
 # msg="completion request" images=0 prompt=76 format=""
