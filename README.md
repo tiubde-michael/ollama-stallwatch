@@ -41,8 +41,8 @@ loaded but the GPU isn't doing anything?", this is for you.
 ## Quick start
 
 ```bash
-git clone https://github.com/tiubde-michael/ti-30.git
-cd ti-30
+git clone https://github.com/tiubde-michael/ollama-stallwatch.git
+cd ollama-stallwatch
 
 # 1. Copy the env template and fill in your values.
 cp .env.example .env
