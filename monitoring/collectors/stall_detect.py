@@ -200,6 +200,24 @@ def capture_stacks(serve_pid):
 
 CONFIDENCE_RANK = {"ghost": 0, "loose": 1, "strict": 2}
 
+# Threshold for "did the GPU produce output in the recent window?"
+# 10% util is well above noise-floor (5% is our stall-trigger threshold)
+# but below normal decode (which sits 30-100%).
+MODE_A_UTIL_THRESHOLD = 10
+MODE_LOOKBACK_SEC = 60
+
+
+def classify_mode(conn):
+    """Look at gpu_metrics in the last MODE_LOOKBACK_SEC.
+    'A' = stream-then-stall (we saw real GPU work, then it stopped)
+    'B' = silent (no GPU activity at all in recent window)"""
+    row = conn.execute(
+        "SELECT MAX(utilization_gpu) FROM gpu_metrics "
+        f"WHERE timestamp > strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-{MODE_LOOKBACK_SEC} seconds')"
+    ).fetchone()
+    max_util = row[0] if row and row[0] is not None else 0
+    return ("A" if max_util > MODE_A_UTIL_THRESHOLD else "B"), max_util
+
 
 def main():
     conn = connect()
@@ -308,18 +326,22 @@ def main():
                     path = capture_stacks(serve_pid) if serve_pid else None
                 except Exception as e:
                     print(f"capture failed: {e}", file=sys.stderr)
+                mode, max_util = classify_mode(conn)
                 cur = conn.execute(
                     "INSERT INTO stall_events (start_ts, gpu_id, vram_used_mib, "
                     "ollama_serve_cpu, ollama_serve_rss_mib, model, stack_path, "
-                    "request_active, confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "request_active, confidence, mode, max_util_recent) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (now_iso(), trigger_gpu, trigger_vram, round(serve_cpu, 1), rss,
-                     model, str(path) if path else None, active, new_conf)
+                     model, str(path) if path else None, active, new_conf,
+                     mode, max_util)
                 )
                 open_event_id = cur.lastrowid
                 open_event_confidence = new_conf
-                print(f"stall_detect: STALL #{open_event_id} ({new_conf}) gpu={trigger_gpu} "
-                      f"vram={trigger_vram}MiB serve_cpu={serve_cpu:.0f}% "
-                      f"active={active} stack={path}", file=sys.stderr)
+                print(f"stall_detect: STALL #{open_event_id} ({new_conf}/mode-{mode}) "
+                      f"gpu={trigger_gpu} vram={trigger_vram}MiB serve_cpu={serve_cpu:.0f}% "
+                      f"max_util_60s={max_util}% active={active} stack={path}",
+                      file=sys.stderr)
 
             elif (open_event_id is not None and stalled_now
                     and CONFIDENCE_RANK[new_conf] > CONFIDENCE_RANK[open_event_confidence]):

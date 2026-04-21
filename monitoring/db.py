@@ -111,10 +111,18 @@ def init_schema(conn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_stall_start ON stall_events(start_ts)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_stall_end ON stall_events(end_ts)")
 
-    # Migration: add confidence column to existing tables
+    # Migration: add columns introduced after initial deploy
     cols = {r[1] for r in conn.execute("PRAGMA table_info(stall_events)").fetchall()}
     if "confidence" not in cols:
         conn.execute("ALTER TABLE stall_events ADD COLUMN confidence TEXT")
+    if "mode" not in cols:
+        # 'A' = stream-then-stall (GPU was active in recent window before idle)
+        # 'B' = silent (GPU never produced output during recent window)
+        conn.execute("ALTER TABLE stall_events ADD COLUMN mode TEXT")
+    if "max_util_recent" not in cols:
+        # Captured at event-open time: max GPU util over the last 60s.
+        # Used to derive mode and as raw evidence for post-mortem.
+        conn.execute("ALTER TABLE stall_events ADD COLUMN max_util_recent INTEGER")
     conn.commit()
 
 
