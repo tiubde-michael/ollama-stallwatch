@@ -11,6 +11,14 @@ monitoring/monitor.db-shm
 
 # Generiertes Dashboard HTML (wird bei jedem Aufruf neu erzeugt)
 monitoring/dashboard.html
+monitoring/api/dashboard.html
+
+# Stall-Stack-Dumps (live generiert, 30d Retention)
+monitoring/stalls/
+
+# Python bytecode
+monitoring/__pycache__/
+monitoring/**/__pycache__/
 
 # Environment (kann Secrets enthalten)
 .env

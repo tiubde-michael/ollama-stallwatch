@@ -1,35 +1,17 @@
 #!/usr/bin/env python3
-"""GPU-Metriken Delta-Logger: Pollt nvidia-smi alle 10s, schreibt nur bei Aenderung in SQLite."""
+"""GPU metrics collector — polls nvidia-smi, writes deltas to gpu_metrics."""
 
-import sqlite3
-import subprocess
-import time
+import shutil
 import signal
+import subprocess
 import sys
-from pathlib import Path
+import time
 
-DB_PATH = Path(__file__).parent / "monitor.db"
-POLL_INTERVAL = 10  # Sekunden
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
+from db import CONFIG, connect
+
+POLL_INTERVAL = CONFIG["gpu"]["poll_interval_sec"]
 QUERY_FIELDS = "index,name,memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw"
-
-
-def init_db(conn):
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS gpu_metrics (
-            timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-            gpu_id    INTEGER NOT NULL,
-            gpu_name  TEXT NOT NULL,
-            vram_used_mib  INTEGER NOT NULL,
-            vram_total_mib INTEGER NOT NULL,
-            utilization_gpu INTEGER NOT NULL,
-            temperature     INTEGER NOT NULL,
-            power_draw_w    REAL NOT NULL
-        )
-    """)
-    conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_gpu_metrics_ts ON gpu_metrics(timestamp)
-    """)
-    conn.commit()
 
 
 def query_nvidia_smi():
@@ -39,7 +21,6 @@ def query_nvidia_smi():
     )
     if result.returncode != 0:
         return None
-
     rows = []
     for line in result.stdout.strip().split("\n"):
         parts = [p.strip() for p in line.split(",")]
@@ -67,11 +48,12 @@ def has_changed(current, last):
 
 
 def main():
-    conn = sqlite3.connect(str(DB_PATH), isolation_level=None)
-    conn.execute("PRAGMA journal_mode=WAL")
-    init_db(conn)
+    if shutil.which("nvidia-smi") is None:
+        print("gpu collector: nvidia-smi not found, exiting cleanly", file=sys.stderr)
+        return 0
 
-    last_values = {}  # gpu_id -> dict
+    conn = connect()
+    last_values = {}
     running = True
 
     def shutdown(signum, frame):
@@ -81,7 +63,7 @@ def main():
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
 
-    print(f"GPU-Logger gestartet (DB: {DB_PATH}, Interval: {POLL_INTERVAL}s)")
+    print(f"gpu collector: poll={POLL_INTERVAL}s db={CONFIG['db_path']}", file=sys.stderr)
 
     while running:
         try:
@@ -91,23 +73,21 @@ def main():
                     gid = gpu["gpu_id"]
                     if has_changed(gpu, last_values.get(gid)):
                         conn.execute(
-                            """INSERT INTO gpu_metrics
-                               (gpu_id, gpu_name, vram_used_mib, vram_total_mib,
-                                utilization_gpu, temperature, power_draw_w)
-                               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                            "INSERT INTO gpu_metrics (gpu_id, gpu_name, vram_used_mib, "
+                            "vram_total_mib, utilization_gpu, temperature, power_draw_w) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?)",
                             (gid, gpu["gpu_name"], gpu["vram_used_mib"],
                              gpu["vram_total_mib"], gpu["utilization_gpu"],
                              gpu["temperature"], gpu["power_draw_w"])
                         )
                         last_values[gid] = gpu.copy()
         except Exception as e:
-            print(f"Fehler: {e}", file=sys.stderr)
-
+            print(f"gpu collector error: {e}", file=sys.stderr)
         time.sleep(POLL_INTERVAL)
 
     conn.close()
-    print("GPU-Logger beendet.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

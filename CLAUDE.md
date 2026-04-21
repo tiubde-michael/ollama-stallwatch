@@ -66,14 +66,21 @@ npm run format:backend                  # Black (backend)
 ├── .env                     # Bind IPs, GPU UUID, ports, project name
 ├── ollama/                  # Ollama data volume (models, history)
 ├── openwebui/               # Open WebUI data volume (DB, uploads, cache, vector_db)
-└── monitoring/              # Lightweight monitoring (GPU + Ollama logs -> SQLite)
-    ├── monitor.db           # SQLite DB (gpu_metrics + ollama_requests, 30d retention)
-    ├── gpu_logger.py        # nvidia-smi delta-logger (systemd: ollama-gpu-logger)
-    ├── log_parser.py        # Ollama docker-log parser (systemd: ollama-log-parser)
-    ├── report.py            # CLI reporting tool (summary, models, gpu, clients, busy, status)
-    ├── dashboard.py         # HTML-Dashboard-Generator (Chart.js)
-    ├── dashboard.html       # Generierte Dashboard-Seite (nicht editieren)
-    └── serve.py             # Mini-Webserver fuer Dashboard (systemd: ollama-dashboard, Port 3002)
+└── monitoring/              # Lightweight monitoring + REST API (SQLite, 30d retention)
+    ├── config.toml          # Per-host config (host_id, container, paths, thresholds)
+    ├── db.py                # Schema (4 tables) + connect() helper
+    ├── monitor.db           # SQLite DB
+    ├── collectors/
+    │   ├── gpu.py           # nvidia-smi delta-logger (systemd: ollama-gpu-logger)
+    │   ├── ollama_logs.py   # Docker-log parser (systemd: ollama-log-parser)
+    │   ├── process.py       # /proc/<pid>/stat for serve+runner (systemd: ollama-process-logger)
+    │   └── stall_detect.py  # Hang detection + gdb/proc stack capture (systemd: ollama-stall-detector)
+    ├── api/
+    │   ├── serve.py         # HTTP server (systemd: ollama-dashboard, Port 3002)
+    │   └── dashboard.py     # HTML generator with stall markers
+    ├── stalls/              # .txt stack dumps from stall_detect (30d retention)
+    ├── report.py            # CLI reporting (summary, models, gpu, clients, busy, status)
+    └── install.sh           # idempotent, host-detecting; writes systemd units + sudoers
 ```
 
 ### Open WebUI Internal Structure (inside container at /app)
@@ -159,14 +166,27 @@ sudo systemctl status ollama-dashboard     # Web-Dashboard auf Port 3002
 
 **`gpu_metrics`**: timestamp, gpu_id, gpu_name, vram_used_mib, vram_total_mib, utilization_gpu, temperature, power_draw_w
 **`ollama_requests`**: timestamp, client_ip, method, endpoint, status, duration_ms, model, prompt_tokens
+**`system_metrics`**: timestamp, proc_role (serve/runner), host_pid, cpu_percent, rss_mib, num_threads, host_load1, host_mem_used_mib
+**`stall_events`**: id, start_ts, end_ts, gpu_id, vram_used_mib, ollama_serve_cpu, ollama_serve_rss_mib, model, stack_path, request_active
+
+### REST API (Port 3002)
+
+- `GET /api/health` — `{ok: true, host: ...}`
+- `GET /api/stalls?since=ISO&limit=N` — list stall_events (open if `end=null`)
+- `GET /api/stalls/<id>/stack` — plain-text stack dump
+- `GET /api/requests?model=&since=&min_duration_ms=&client_ip=&status=&...` — filtered ollama_requests
+- `GET /api/system?since=ISO` — system_metrics time series
 
 ### Details
 
 - **GPU Logger**: Pollt `nvidia-smi` alle 10s, schreibt nur bei Wertaenderung (Delta-Logging)
 - **Log Parser**: Folgt `docker compose logs ollama`, extrahiert Modell, Prompt-Tokens, Dauer, Client-IP. Erkennt sowohl offizielle Modelle (`library/`) als auch Community-Modelle (z.B. `alibayram/medgemma`).
-- **Retention**: Cronjob loescht Eintraege aelter 30 Tage (`/etc/cron.d/ollama-monitor-retention`)
+- **Process Logger**: liest `/proc/<host_pid>/{stat,status}` fuer ollama serve + runner alle 10s; berechnet CPU% als Delta ueber Intervall.
+- **Stall Detector**: alle 5s; wenn pro GPU `vram>1GB AND util<=5% AND power<=50W AND serve_cpu>=50%` fuer 6 Polls in Folge (=30s), wird ein `stall_event` geschrieben + Stack-Dump (Threads, /proc kernel-stacks via sudo, gdb backtrace) nach `monitoring/stalls/<ts>_pid<N>.txt`. Sudoers in `/etc/sudoers.d/ollama-monitor`.
+- **Retention**: Cronjob loescht DB-Eintraege + Stack-Dateien aelter 30 Tage (`/etc/cron.d/ollama-monitor-retention`)
 - **DB**: `/srv/Container/monitoring/monitor.db` (SQLite WAL mode)
-- **Dashboard**: Chart.js, wird bei jedem Seitenaufruf live aus SQLite generiert
+- **Dashboard**: Chart.js, wird bei jedem Seitenaufruf live aus SQLite generiert; rote Banderolen markieren Stall-Fenster auf GPU+CPU-Charts.
+- **Portabilitaet**: `install.sh` ist idempotent + host-detecting (skipt Services wenn `nvidia-smi`/`docker` fehlen). Auf neuem Host: rsync + `config.toml` anpassen + `sudo ./install.sh`.
 
 ## Notes
 

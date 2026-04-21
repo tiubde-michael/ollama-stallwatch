@@ -1,0 +1,36 @@
+# Monitoring config — adjust per host. Path-relative entries are resolved
+# against the directory containing this file.
+
+host_id = "ti-30"
+db_path = "monitor.db"
+stalls_dir = "stalls"
+gdb_path = "/usr/bin/gdb"
+sudo_path = "/usr/bin/sudo"
+
+[ollama]
+container_name = "ollama"
+compose_file = "/srv/Container/docker-compose.yml"
+
+[api]
+host = "0.0.0.0"
+port = 3002
+
+[gpu]
+poll_interval_sec = 10
+
+[process]
+poll_interval_sec = 10
+
+[stall]
+poll_interval_sec = 5
+vram_min_mib = 1000
+util_max_percent = 5
+power_max_watts = 50
+ollama_serve_cpu_min_percent = 50
+consecutive_polls_required = 6   # 6 * 5s = 30s confirmed
+cooldown_sec = 120
+capture_gdb = true
+capture_proc_stacks = true
+
+[retention]
+days = 30
