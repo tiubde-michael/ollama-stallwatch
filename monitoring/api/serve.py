@@ -3,8 +3,10 @@
 
 import http.server
 import json
+import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
@@ -87,6 +89,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if path == "/api/system":
             since = qs.get("since", ["1970-01-01T00:00:00Z"])[0]
             return json_response(self, self._query_system(since))
+
+        if path == "/api/gpu/live":
+            return json_response(self, self._query_gpu_live())
+
+        if path == "/api/gpu/series":
+            since = qs.get("since", ["1970-01-01T00:00:00Z"])[0]
+            gpu_id = qs.get("gpu_id", [None])[0]
+            return json_response(self, self._query_gpu_series(since, gpu_id))
 
         # ===== HTML dashboard =====
         if path in ("/", "/dashboard.html"):
@@ -205,6 +215,74 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                            "endpoint": r[3], "status": r[4], "duration_ms": r[5],
                            "model": r[6], "prompt_tokens": r[7]} for r in rows]}
 
+    def _query_gpu_live(self):
+        """Fresh nvidia-smi snapshot. Adds ~50ms latency vs DB read but always
+        current — important for ti-10's 'is the GPU working RIGHT NOW' check."""
+        if shutil.which("nvidia-smi") is None:
+            return {"host": CONFIG["host_id"], "as_of": None,
+                    "gpus": [], "error": "nvidia-smi not available"}
+        try:
+            r = subprocess.run(
+                ["nvidia-smi",
+                 "--query-gpu=index,name,memory.used,memory.total,"
+                 "utilization.gpu,power.draw,temperature.gpu",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=5
+            )
+        except subprocess.TimeoutExpired:
+            return {"host": CONFIG["host_id"], "as_of": None,
+                    "gpus": [], "error": "nvidia-smi timeout"}
+        if r.returncode != 0:
+            return {"host": CONFIG["host_id"], "as_of": None,
+                    "gpus": [], "error": r.stderr.strip()}
+        gpus = []
+        for line in r.stdout.strip().split("\n"):
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) != 7:
+                continue
+            try:
+                gpus.append({
+                    "gpu_id": int(parts[0]),
+                    "name": parts[1],
+                    "mem_used_mib": int(parts[2]),
+                    "mem_total_mib": int(parts[3]),
+                    "util_pct": int(parts[4]),
+                    "power_w": float(parts[5]),
+                    "temp_c": int(parts[6]),
+                })
+            except ValueError:
+                continue
+        return {"host": CONFIG["host_id"],
+                "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "gpus": gpus}
+
+    def _query_gpu_series(self, since, gpu_id):
+        """Time series from gpu_metrics table. Note: delta-logged, so points
+        may be sparse during stable periods (no change = no row)."""
+        where = ["timestamp > ?"]
+        params = [since]
+        if gpu_id is not None:
+            try:
+                where.append("gpu_id = ?")
+                params.append(int(gpu_id))
+            except ValueError:
+                return {"host": CONFIG["host_id"], "items": [],
+                        "error": "gpu_id must be integer"}
+        conn = connect()
+        rows = conn.execute(
+            "SELECT timestamp, gpu_id, gpu_name, vram_used_mib, vram_total_mib, "
+            "utilization_gpu, power_draw_w, temperature FROM gpu_metrics "
+            f"WHERE {' AND '.join(where)} ORDER BY timestamp", params
+        ).fetchall()
+        conn.close()
+        return {"host": CONFIG["host_id"],
+                "filters": {"since": since, "gpu_id": gpu_id},
+                "note": "delta-logged: rows only when values change",
+                "items": [{"ts": r[0], "gpu_id": r[1], "name": r[2],
+                           "mem_used_mib": r[3], "mem_total_mib": r[4],
+                           "util_pct": r[5], "power_w": r[6], "temp_c": r[7]}
+                          for r in rows]}
+
     def _query_system(self, since):
         conn = connect()
         rows = conn.execute("""
@@ -228,6 +306,8 @@ def main():
     print(f"  /api/stalls/<id>/stack   text stack capture", file=sys.stderr)
     print(f"  /api/requests  ollama requests (?model=&min_duration_ms=&since=&...)", file=sys.stderr)
     print(f"  /api/system    process+host metrics (?since=)", file=sys.stderr)
+    print(f"  /api/gpu/live  fresh nvidia-smi snapshot (always current)", file=sys.stderr)
+    print(f"  /api/gpu/series  gpu_metrics time series (?since=, ?gpu_id=)", file=sys.stderr)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

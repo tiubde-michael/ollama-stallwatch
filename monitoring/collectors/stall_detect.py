@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
-"""Stall detector — flags GPU-loaded but idle while ollama serve is hot.
-
-Runs two parallel criteria:
+"""Stall detector — flags GPU-loaded but inactive in three patterns.
 
   STRICT: vram>min AND util<=max AND power<=strict_max AND serve_cpu>=min
           for `strict_consecutive_polls` polls in a row.
+          (Classic CPU-bound hang: ollama serve burning a core, GPU idle.)
 
-  LOOSE:  vram>min AND util<=max AND power<=loose_max AND serve_cpu>=min
-          for at least `loose_window_match_fraction` of the last
-          `loose_window_polls` polls (sliding window).
+  LOOSE:  same shape but power<=loose_max AND `loose_window_match_fraction`
+          of last `loose_window_polls` (sliding window).
+          (CPU-bound hang with minor dips that strict misses.)
 
-When either fires, a stall_event row is opened with `confidence` set to
-'strict' or 'loose'. If a 'loose' event later sees a strict match, the
-event's confidence is upgraded to 'strict' in place. Stack capture runs
-once per event regardless of which criterion opened it.
+  GHOST:  vram>min AND util<=max AND request_active AND serve_cpu<ghost_max
+          for `ghost_consecutive_polls` in a row.
+          (Opposite signature: Ollama took the POST, model is loaded, but
+          neither GPU nor CPU does anything — request hangs silently.)
+
+Confidence ordering: strict > loose > ghost. An open lower-confidence event
+is upgraded in place if a higher-confidence match occurs during the same
+window. Stack capture runs once per event regardless of which criterion
+opened it.
 """
 
 import os
@@ -39,6 +43,8 @@ STRICT_NEEDED = S["strict_consecutive_polls"]
 LOOSE_POWER_MAX = S["loose_power_max_watts"]
 LOOSE_WINDOW = S["loose_window_polls"]
 LOOSE_FRAC = S["loose_window_match_fraction"]
+GHOST_CPU_MAX = S.get("ghost_serve_cpu_max_percent", 50)
+GHOST_NEEDED = S.get("ghost_consecutive_polls", 6)
 COOLDOWN = S["cooldown_sec"]
 CAPTURE_GDB = S["capture_gdb"]
 CAPTURE_PROC = S["capture_proc_stacks"]
@@ -192,11 +198,15 @@ def capture_stacks(serve_pid):
     return path
 
 
+CONFIDENCE_RANK = {"ghost": 0, "loose": 1, "strict": 2}
+
+
 def main():
     conn = connect()
 
     strict_count = defaultdict(int)
     loose_window = defaultdict(lambda: deque(maxlen=LOOSE_WINDOW))
+    ghost_count = defaultdict(int)
     open_event_id = None
     open_event_confidence = None
     last_close_t = 0.0
@@ -214,7 +224,8 @@ def main():
           f"strict=({STRICT_NEEDED}*{POLL_INTERVAL}s, power<={STRICT_POWER_MAX}W) "
           f"loose=({int(LOOSE_FRAC*100)}% of {LOOSE_WINDOW}*{POLL_INTERVAL}s, "
           f"power<={LOOSE_POWER_MAX}W) "
-          f"vram>{VRAM_MIN}MiB util<={UTIL_MAX}% serve_cpu>={SERVE_CPU_MIN}%",
+          f"ghost=({GHOST_NEEDED}*{POLL_INTERVAL}s, serve_cpu<{GHOST_CPU_MAX}% AND request_active) "
+          f"vram>{VRAM_MIN}MiB util<={UTIL_MAX}%",
           file=sys.stderr)
 
     while running:
@@ -235,14 +246,26 @@ def main():
             gpus = query_nvidia_smi()
             any_strict = False
             any_loose = False
+            any_ghost = False
             trigger_gpu = None
             trigger_vram = None
 
+            # request_active is expensive (docker logs subprocess) — cache per poll
+            cached_active = None
+            def is_active():
+                nonlocal cached_active
+                if cached_active is None:
+                    cached_active = has_active_request()
+                return bool(cached_active)
+
             for g in gpus:
                 gid = g["gpu_id"]
-                base = (g["vram"] > VRAM_MIN
-                        and g["util"] <= UTIL_MAX
-                        and serve_cpu >= SERVE_CPU_MIN)
+                vram_loaded = g["vram"] > VRAM_MIN
+                gpu_idle = g["util"] <= UTIL_MAX
+
+                # CPU-bound paths
+                cpu_hot = serve_cpu >= SERVE_CPU_MIN
+                base = vram_loaded and gpu_idle and cpu_hot
                 strict_match = base and g["power"] <= STRICT_POWER_MAX
                 loose_match = base and g["power"] <= LOOSE_POWER_MAX
 
@@ -259,14 +282,27 @@ def main():
                     if trigger_gpu is None:
                         trigger_gpu, trigger_vram = gid, g["vram"]
 
-            stalled_now = any_strict or any_loose
+                # GHOST path: NOT cpu-bound but request is in flight
+                ghost_match = (vram_loaded and gpu_idle
+                               and serve_cpu < GHOST_CPU_MAX
+                               and is_active())
+                ghost_count[gid] = ghost_count[gid] + 1 if ghost_match else 0
+                if ghost_count[gid] >= GHOST_NEEDED:
+                    any_ghost = True
+                    if trigger_gpu is None:
+                        trigger_gpu, trigger_vram = gid, g["vram"]
+
+            # Pick the highest-confidence match for this poll
+            new_conf = ("strict" if any_strict else
+                        "loose" if any_loose else
+                        "ghost" if any_ghost else None)
+            stalled_now = new_conf is not None
 
             # State machine: open / upgrade / close
             if stalled_now and open_event_id is None and (now_t - last_close_t) > COOLDOWN:
-                conf = "strict" if any_strict else "loose"
                 rss = read_proc_rss_mib(serve_pid) if serve_pid else None
                 model = get_loaded_model()
-                active = has_active_request()
+                active = 1 if (cached_active or is_active()) else 0
                 path = None
                 try:
                     path = capture_stacks(serve_pid) if serve_pid else None
@@ -277,23 +313,23 @@ def main():
                     "ollama_serve_cpu, ollama_serve_rss_mib, model, stack_path, "
                     "request_active, confidence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (now_iso(), trigger_gpu, trigger_vram, round(serve_cpu, 1), rss,
-                     model, str(path) if path else None, active, conf)
+                     model, str(path) if path else None, active, new_conf)
                 )
                 open_event_id = cur.lastrowid
-                open_event_confidence = conf
-                print(f"stall_detect: STALL #{open_event_id} ({conf}) gpu={trigger_gpu} "
-                      f"vram={trigger_vram}MiB serve_cpu={serve_cpu:.0f}% stack={path}",
-                      file=sys.stderr)
+                open_event_confidence = new_conf
+                print(f"stall_detect: STALL #{open_event_id} ({new_conf}) gpu={trigger_gpu} "
+                      f"vram={trigger_vram}MiB serve_cpu={serve_cpu:.0f}% "
+                      f"active={active} stack={path}", file=sys.stderr)
 
-            elif open_event_id is not None and any_strict and open_event_confidence != "strict":
-                # Upgrade loose → strict
+            elif (open_event_id is not None and stalled_now
+                    and CONFIDENCE_RANK[new_conf] > CONFIDENCE_RANK[open_event_confidence]):
                 conn.execute(
-                    "UPDATE stall_events SET confidence='strict' WHERE id=?",
-                    (open_event_id,)
+                    "UPDATE stall_events SET confidence=? WHERE id=?",
+                    (new_conf, open_event_id)
                 )
-                open_event_confidence = "strict"
-                print(f"stall_detect: stall #{open_event_id} upgraded to STRICT",
-                      file=sys.stderr)
+                print(f"stall_detect: stall #{open_event_id} upgraded "
+                      f"{open_event_confidence} -> {new_conf}", file=sys.stderr)
+                open_event_confidence = new_conf
 
             elif not stalled_now and open_event_id is not None:
                 conn.execute(

@@ -44,5 +44,12 @@ cooldown_sec = 120
 capture_gdb = true
 capture_proc_stacks = true
 
+# GHOST criteria: opposite signature of strict/loose. Ollama accepted the
+# request (active) and the model is loaded (vram>min) but the GPU does
+# nothing (util<=max) AND ollama serve is NOT cpu-bound (serve_cpu<max).
+# Catches the "POST taken, then nothing" failure mode that strict/loose miss.
+ghost_serve_cpu_max_percent = 50
+ghost_consecutive_polls = 6      # 6 * 5s = 30s of confirmed inactivity
+
 [retention]
 days = 30
