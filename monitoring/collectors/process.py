@@ -14,6 +14,7 @@ from db import CONFIG, connect
 
 CONTAINER = CONFIG["ollama"]["container_name"]
 POLL_INTERVAL = CONFIG["process"]["poll_interval_sec"]
+HEARTBEAT_SEC = CONFIG["process"].get("heartbeat_sec", 60)
 CLK_TCK = os.sysconf(os.sysconf_names["SC_CLK_TCK"])
 PAGE_SIZE = os.sysconf(os.sysconf_names["SC_PAGE_SIZE"])
 
@@ -100,8 +101,9 @@ def main():
 
     conn = connect()
     running = True
-    prev_ticks = {}   # pid -> (ticks, wall_time)
-    last_logged = {}  # role -> last record dict
+    prev_ticks = {}    # pid -> (ticks, wall_time)
+    last_logged = {}   # role -> last record dict
+    last_write_t = {}  # role -> wall time of last DB insert
 
     def shutdown(signum, frame):
         nonlocal running
@@ -159,7 +161,9 @@ def main():
                     "host_mem_used_mib": host_mem,
                 }
 
-                if has_changed(record, last_logged.get(role)):
+                # Force write if delta exceeds thresholds OR heartbeat elapsed
+                heartbeat_due = (now - last_write_t.get(role, 0)) >= HEARTBEAT_SEC
+                if has_changed(record, last_logged.get(role)) or heartbeat_due:
                     conn.execute(
                         "INSERT INTO system_metrics (proc_role, host_pid, cpu_percent, "
                         "rss_mib, num_threads, host_load1, host_mem_used_mib) "
@@ -168,6 +172,7 @@ def main():
                          host_load1, host_mem)
                     )
                     last_logged[role] = record
+                    last_write_t[role] = now
         except Exception as e:
             print(f"process collector error: {e}", file=sys.stderr)
 

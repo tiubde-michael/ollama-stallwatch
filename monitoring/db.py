@@ -94,10 +94,17 @@ def init_schema(conn):
             model           TEXT,
             stack_path      TEXT,
             request_active  INTEGER,
+            confidence      TEXT,    -- 'strict' or 'loose'
             notes           TEXT
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_stall_start ON stall_events(start_ts)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_stall_end ON stall_events(end_ts)")
+
+    # Migration: add confidence column to existing tables
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(stall_events)").fetchall()}
+    if "confidence" not in cols:
+        conn.execute("ALTER TABLE stall_events ADD COLUMN confidence TEXT")
     conn.commit()
 
 

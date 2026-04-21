@@ -57,10 +57,24 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return json_response(self, {"ok": True, "host": CONFIG["host_id"]})
 
         if path == "/api/stalls":
-            since = (qs.get("since", [None])[0]
-                     or "1970-01-01T00:00:00Z")
             limit = int(qs.get("limit", ["100"])[0])
-            return json_response(self, self._query_stalls(since, limit))
+            confidence = qs.get("confidence", [None])[0]  # 'strict' or 'loose'
+            at = qs.get("at", [None])[0]
+            overlapping = qs.get("overlapping", [None])[0]
+            if at:
+                # stalls active AT this timestamp
+                return json_response(self, self._query_stalls_overlap(
+                    at, at, limit, confidence))
+            if overlapping:
+                # comma-separated start,end
+                try:
+                    a, b = overlapping.split(",", 1)
+                except ValueError:
+                    return text_response(self, "overlapping must be 'start,end'\n", 400)
+                return json_response(self, self._query_stalls_overlap(
+                    a.strip(), b.strip(), limit, confidence))
+            since = qs.get("since", ["1970-01-01T00:00:00Z"])[0]
+            return json_response(self, self._query_stalls(since, limit, confidence))
 
         if path.startswith("/api/stalls/"):
             parts = path.split("/")
@@ -87,21 +101,48 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         return super().do_GET()
 
-    def _query_stalls(self, since, limit):
+    def _row_to_stall(self, r):
+        return {"id": r[0], "start": r[1], "end": r[2], "gpu_id": r[3],
+                "vram_used_mib": r[4], "ollama_serve_cpu": r[5],
+                "ollama_serve_rss_mib": r[6], "model": r[7],
+                "stack_url": (f"/api/stalls/{r[0]}/stack" if r[8] else None),
+                "request_active": r[9], "confidence": r[10]}
+
+    SELECT_STALL = ("SELECT id, start_ts, end_ts, gpu_id, vram_used_mib, "
+                    "ollama_serve_cpu, ollama_serve_rss_mib, model, stack_path, "
+                    "request_active, confidence FROM stall_events ")
+
+    def _query_stalls(self, since, limit, confidence=None):
+        where = ["start_ts > ?"]
+        params = [since]
+        if confidence:
+            where.append("confidence = ?"); params.append(confidence)
+        params.append(limit)
         conn = connect()
-        rows = conn.execute("""
-            SELECT id, start_ts, end_ts, gpu_id, vram_used_mib, ollama_serve_cpu,
-                   ollama_serve_rss_mib, model, stack_path, request_active
-            FROM stall_events WHERE start_ts > ?
-            ORDER BY start_ts DESC LIMIT ?
-        """, (since, limit)).fetchall()
+        rows = conn.execute(
+            self.SELECT_STALL + f"WHERE {' AND '.join(where)} "
+            "ORDER BY start_ts DESC LIMIT ?", params).fetchall()
         conn.close()
         return {"host": CONFIG["host_id"],
-                "items": [{"id": r[0], "start": r[1], "end": r[2], "gpu_id": r[3],
-                           "vram_used_mib": r[4], "ollama_serve_cpu": r[5],
-                           "ollama_serve_rss_mib": r[6], "model": r[7],
-                           "stack_url": (f"/api/stalls/{r[0]}/stack" if r[8] else None),
-                           "request_active": r[9]} for r in rows]}
+                "items": [self._row_to_stall(r) for r in rows]}
+
+    def _query_stalls_overlap(self, range_start, range_end, limit, confidence=None):
+        # An event overlaps [range_start, range_end] iff:
+        #   start_ts <= range_end AND (end_ts IS NULL OR end_ts >= range_start)
+        where = ["start_ts <= ?", "(end_ts IS NULL OR end_ts >= ?)"]
+        params = [range_end, range_start]
+        if confidence:
+            where.append("confidence = ?"); params.append(confidence)
+        params.append(limit)
+        conn = connect()
+        rows = conn.execute(
+            self.SELECT_STALL + f"WHERE {' AND '.join(where)} "
+            "ORDER BY start_ts DESC LIMIT ?", params).fetchall()
+        conn.close()
+        return {"host": CONFIG["host_id"],
+                "query": {"range_start": range_start, "range_end": range_end,
+                          "confidence": confidence},
+                "items": [self._row_to_stall(r) for r in rows]}
 
     def _serve_stack(self, stall_id):
         conn = connect()
@@ -183,7 +224,7 @@ def main():
     print(f"dashboard+api on http://{HOST}:{PORT}", file=sys.stderr)
     print(f"  /              dashboard (24h, ?h=N to override)", file=sys.stderr)
     print(f"  /api/health    {{ok:true}}", file=sys.stderr)
-    print(f"  /api/stalls    list stall_events (?since=ISO&limit=N)", file=sys.stderr)
+    print(f"  /api/stalls    list stall_events (?since=, ?at=, ?overlapping=A,B, ?confidence=)", file=sys.stderr)
     print(f"  /api/stalls/<id>/stack   text stack capture", file=sys.stderr)
     print(f"  /api/requests  ollama requests (?model=&min_duration_ms=&since=&...)", file=sys.stderr)
     print(f"  /api/system    process+host metrics (?since=)", file=sys.stderr)

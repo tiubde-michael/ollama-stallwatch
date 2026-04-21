@@ -20,14 +20,20 @@ poll_interval_sec = 10
 
 [process]
 poll_interval_sec = 10
+heartbeat_sec = 60               # force-write at least every N sec even if no delta
 
 [stall]
 poll_interval_sec = 5
 vram_min_mib = 1000
 util_max_percent = 5
-power_max_watts = 50
 ollama_serve_cpu_min_percent = 50
-consecutive_polls_required = 6   # 6 * 5s = 30s confirmed
+# Strict criteria: tighter power threshold + N polls in a row.
+strict_power_max_watts = 50
+strict_consecutive_polls = 6     # 6 * 5s = 30s continuous
+# Loose criteria: relaxed power threshold + sliding window.
+loose_power_max_watts = 75
+loose_window_polls = 6           # window size = 30s
+loose_window_match_fraction = 0.8 # 80% of last 30s must match
 cooldown_sec = 120
 capture_gdb = true
 capture_proc_stacks = true
