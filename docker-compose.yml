@@ -42,8 +42,10 @@ services:
       OLLAMA_DEBUG: "1"
 
       # ── Context & Speicher ──
-      # Kontextfenster bleibt bei 32k
-      OLLAMA_CONTEXT_LENGTH: "32768"
+      # Alt (Testweise deaktiviert):
+      # OLLAMA_CONTEXT_LENGTH: "32768"
+      # Neu fuer Long-Context-Test (256k):
+      OLLAMA_CONTEXT_LENGTH: "262144"
       # Flash Attention: reduziert KV-Cache VRAM-Verbrauch um ~30-50%
       OLLAMA_FLASH_ATTENTION: "1"
       # 2 GiB Reserve = konservativ, praxistauglich
