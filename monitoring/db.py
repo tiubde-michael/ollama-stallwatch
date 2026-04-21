@@ -7,9 +7,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent
 CONFIG_PATH = ROOT / "config.toml"
+EXAMPLE_PATH = ROOT / "config.example.toml"
 
 
 def load_config():
+    if not CONFIG_PATH.exists():
+        if EXAMPLE_PATH.exists():
+            sys.stderr.write(
+                f"ERROR: {CONFIG_PATH.name} not found. Copy from template:\n"
+                f"  cp {EXAMPLE_PATH} {CONFIG_PATH}\n"
+                f"Then edit host_id and any per-host paths.\n"
+                f"(install.sh does this automatically on first run.)\n"
+            )
+        raise SystemExit(2)
     with open(CONFIG_PATH, "rb") as f:
         cfg = tomllib.load(f)
 

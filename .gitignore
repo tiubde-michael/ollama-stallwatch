@@ -9,7 +9,14 @@ monitoring/monitor.db
 monitoring/monitor.db-wal
 monitoring/monitor.db-shm
 
-# Generiertes Dashboard HTML (wird bei jedem Aufruf neu erzeugt)
+# Per-host monitoring config (a real config.toml is created from
+# config.example.toml on first install — see monitoring/install.sh).
+# Per-Host Monitoring-Config (echte config.toml wird beim ersten install
+# aus config.example.toml erzeugt — siehe monitoring/install.sh).
+monitoring/config.toml
+
+# Generated dashboard HTML (regenerated on every page load).
+# Generiertes Dashboard HTML (bei jedem Aufruf neu erzeugt).
 monitoring/dashboard.html
 monitoring/api/dashboard.html
 

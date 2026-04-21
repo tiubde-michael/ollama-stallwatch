@@ -1,7 +1,12 @@
-# Monitoring config — adjust per host. Path-relative entries are resolved
-# against the directory containing this file.
+# Monitoring config template. Copy to config.toml and adjust per host.
+# install.sh will auto-copy this to config.toml on first run if missing.
+# Path-relative entries are resolved against the directory of THIS file.
 
-host_id = "ti-30"
+# Identifier for this host. Shown in dashboard title and /api/health response.
+# Set to your hostname (e.g. "gpu-server-01") so cross-host correlation
+# can tell which monitor a record came from.
+host_id = "<set-per-host>"
+
 db_path = "monitor.db"
 stalls_dir = "stalls"
 gdb_path = "/usr/bin/gdb"
@@ -9,7 +14,8 @@ sudo_path = "/usr/bin/sudo"
 
 [ollama]
 container_name = "ollama"
-compose_file = "/srv/Container/docker-compose.yml"
+# Path to your docker-compose.yml (relative or absolute).
+compose_file = "../docker-compose.yml"
 
 [api]
 host = "0.0.0.0"

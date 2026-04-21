@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Docker-based deployment of **Open WebUI** (v0.6.43) with **Ollama** (v0.17.6) as a local LLM inference backend. The setup runs on an NVIDIA RTX 3090 Ti (24 GB VRAM) + RTX 5060 Ti (16 GB VRAM) with GPU passthrough.
+This is a Docker-based deployment of **Open WebUI** (v0.6.43) with **Ollama** (v0.17.6) as a local LLM inference backend. The setup is designed for a multi-GPU NVIDIA host with GPU passthrough.
 
 - **Open WebUI**: Full-stack AI chat/RAG web application (Python/FastAPI backend + TypeScript/SvelteKit frontend)
 - **Ollama**: Local LLM inference engine with NVIDIA CUDA support
@@ -15,7 +15,8 @@ This is a Docker-based deployment of **Open WebUI** (v0.6.43) with **Ollama** (v
 ### Docker Operations
 
 ```bash
-cd /srv/Container
+# All commands assume you are in the deployment root (DATA_ROOT in .env).
+cd "$DATA_ROOT"                     # default: /srv/Container
 docker compose up -d                # Start all services
 docker compose down                 # Stop all services
 docker compose logs -f openwebui    # Follow Open WebUI logs
@@ -61,26 +62,28 @@ npm run format:backend                  # Black (backend)
 ### Container Layout
 
 ```
-/srv/Container/
-├── docker-compose.yml       # Service orchestration (ollama + openwebui)
-├── .env                     # Bind IPs, GPU UUID, ports, project name
-├── ollama/                  # Ollama data volume (models, history)
-├── openwebui/               # Open WebUI data volume (DB, uploads, cache, vector_db)
-└── monitoring/              # Lightweight monitoring + REST API (SQLite, 30d retention)
-    ├── config.toml          # Per-host config (host_id, container, paths, thresholds)
-    ├── db.py                # Schema (4 tables) + connect() helper
-    ├── monitor.db           # SQLite DB
+$DATA_ROOT/                          # default /srv/Container, set in .env
+├── docker-compose.yml               # Service orchestration (ollama + openwebui)
+├── .env                             # Bind IPs, GPU UUID, ports, project name (gitignored)
+├── .env.example                     # Template for .env
+├── ollama/                          # Ollama data volume (models, history) [gitignored]
+├── openwebui/                       # Open WebUI data volume (DB, uploads, cache, vector_db) [gitignored]
+└── monitoring/                      # Lightweight monitoring + REST API (SQLite, 30d retention)
+    ├── config.toml                  # Per-host config (host_id, paths, thresholds) [gitignored]
+    ├── config.example.toml          # Template — install.sh creates config.toml from this
+    ├── db.py                        # Schema (4 tables) + connect() helper
+    ├── monitor.db                   # SQLite DB
     ├── collectors/
-    │   ├── gpu.py           # nvidia-smi delta-logger (systemd: ollama-gpu-logger)
-    │   ├── ollama_logs.py   # Docker-log parser (systemd: ollama-log-parser)
-    │   ├── process.py       # /proc/<pid>/stat for serve+runner (systemd: ollama-process-logger)
-    │   └── stall_detect.py  # Hang detection + gdb/proc stack capture (systemd: ollama-stall-detector)
+    │   ├── gpu.py                   # nvidia-smi delta-logger (systemd: ollama-gpu-logger)
+    │   ├── ollama_logs.py           # Docker-log parser (systemd: ollama-log-parser)
+    │   ├── process.py               # /proc/<pid>/stat for serve+runner (systemd: ollama-process-logger)
+    │   └── stall_detect.py          # Hang detection + gdb/proc stack capture (systemd: ollama-stall-detector)
     ├── api/
-    │   ├── serve.py         # HTTP server (systemd: ollama-dashboard, Port 3002)
-    │   └── dashboard.py     # HTML generator with stall markers
-    ├── stalls/              # .txt stack dumps from stall_detect (30d retention)
-    ├── report.py            # CLI reporting (summary, models, gpu, clients, busy, status)
-    └── install.sh           # idempotent, host-detecting; writes systemd units + sudoers
+    │   ├── serve.py                 # HTTP server (systemd: ollama-dashboard, port 3002)
+    │   └── dashboard.py             # HTML generator with stall markers
+    ├── stalls/                      # .txt stack dumps from stall_detect (30d retention)
+    ├── report.py                    # CLI reporting (summary, models, gpu, clients, busy, status)
+    └── install.sh                   # idempotent, host-detecting; writes systemd units + sudoers
 ```
 
 ### Open WebUI Internal Structure (inside container at /app)
@@ -139,19 +142,20 @@ http://<server-ip>:3002/?h=168   # letzte 7 Tage
 http://<server-ip>:3002/?h=720   # letzte 30 Tage
 ```
 
-Charts: GPU VRAM, GPU Auslastung %, Temperatur/Power, Requests/Stunde, Modell-Verteilung, Prompt-Tokens vs Dauer.
-Erreichbar im LAN (192.168.5.0/24) und ueber Tailscale.
+Charts: GPU VRAM, GPU utilization %, temperature/power, requests/hour, model distribution, prompt tokens vs duration.
+Bind reach is controlled by `BIND_IP` in `.env` (LAN by default; route via your VPN of choice if you need remote access).
 
 ### CLI Reports
 
 ```bash
-python3 /srv/Container/monitoring/report.py summary      # Uebersicht letzte 24h
-python3 /srv/Container/monitoring/report.py models        # Modell-Nutzung (7d)
-python3 /srv/Container/monitoring/report.py gpu           # GPU-Metriken (24h)
-python3 /srv/Container/monitoring/report.py clients       # Client-IPs (7d)
-python3 /srv/Container/monitoring/report.py busy          # Busiest Stunden (7d)
-python3 /srv/Container/monitoring/report.py status        # DB-Status
-# Alle Befehle akzeptieren optionalen Stunden-Parameter: report.py gpu 48
+# Run from monitoring/ directory; commands accept an optional hours arg.
+python3 monitoring/report.py summary      # Overview last 24h
+python3 monitoring/report.py models       # Model usage (7d)
+python3 monitoring/report.py gpu          # GPU metrics (24h)
+python3 monitoring/report.py clients      # Client IPs (7d)
+python3 monitoring/report.py busy         # Busiest hours (7d)
+python3 monitoring/report.py status       # DB status
+# Hours arg: report.py gpu 48
 ```
 
 ### Systemd Services
@@ -183,15 +187,15 @@ sudo systemctl status ollama-dashboard     # Web-Dashboard auf Port 3002
 - **Log Parser**: Folgt `docker compose logs ollama`, extrahiert Modell, Prompt-Tokens, Dauer, Client-IP. Erkennt sowohl offizielle Modelle (`library/`) als auch Community-Modelle (z.B. `alibayram/medgemma`).
 - **Process Logger**: liest `/proc/<host_pid>/{stat,status}` fuer ollama serve + runner alle 10s; berechnet CPU% als Delta ueber Intervall.
 - **Stall Detector**: alle 5s; wenn pro GPU `vram>1GB AND util<=5% AND power<=50W AND serve_cpu>=50%` fuer 6 Polls in Folge (=30s), wird ein `stall_event` geschrieben + Stack-Dump (Threads, /proc kernel-stacks via sudo, gdb backtrace) nach `monitoring/stalls/<ts>_pid<N>.txt`. Sudoers in `/etc/sudoers.d/ollama-monitor`.
-- **Retention**: Cronjob loescht DB-Eintraege + Stack-Dateien aelter 30 Tage (`/etc/cron.d/ollama-monitor-retention`)
-- **DB**: `/srv/Container/monitoring/monitor.db` (SQLite WAL mode)
+- **Retention**: Cron deletes DB rows + stack files older than 30 days (`/etc/cron.d/ollama-monitor-retention`).
+- **DB**: `monitoring/monitor.db` (SQLite WAL mode).
 - **Dashboard**: Chart.js, wird bei jedem Seitenaufruf live aus SQLite generiert; rote Banderolen markieren Stall-Fenster auf GPU+CPU-Charts.
 - **Portabilitaet**: `install.sh` ist idempotent + host-detecting (skipt Services wenn `nvidia-smi`/`docker` fehlen). Auf neuem Host: rsync + `config.toml` anpassen + `sudo ./install.sh`.
 
 ## Notes
 
-- Comments in `docker-compose.yml` are in German and document deviations from default/previous configurations.
+- Comments in `docker-compose.yml` are bilingual (English + German).
 - Image versions are pinned (not `:latest`) for controlled updates.
-- The Open WebUI database (SQLite) lives at `/srv/Container/openwebui/webui.db`.
-- Vector DB data persists at `/srv/Container/openwebui/vector_db/`.
-- `ollama_admin` user has passwordless sudo configured via `/etc/sudoers.d/ollama_admin`.
+- The Open WebUI database (SQLite) lives at `openwebui/webui.db` under `$DATA_ROOT`.
+- Vector DB data persists at `openwebui/vector_db/` under `$DATA_ROOT`.
+- The monitoring stall detector requires a small NOPASSWD sudoers entry installed by `install.sh` — see README.md "Security model" for what it allows.

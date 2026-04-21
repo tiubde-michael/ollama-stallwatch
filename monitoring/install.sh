@@ -14,6 +14,14 @@ HAS_GDB=0; command -v gdb >/dev/null && HAS_GDB=1
 
 echo "host detection: GPU=$HAS_GPU docker=$HAS_DOCKER gdb=$HAS_GDB"
 
+# First-run: create config.toml from template if it doesn't exist yet,
+# then prompt the operator to set host_id.
+if [[ ! -f "$ROOT/config.toml" && -f "$ROOT/config.example.toml" ]]; then
+  cp "$ROOT/config.example.toml" "$ROOT/config.toml"
+  sed -i "s/<set-per-host>/$(hostname -s)/" "$ROOT/config.toml"
+  echo "  created $ROOT/config.toml from template (host_id=$(hostname -s))"
+fi
+
 # Initialize DB schema
 "$PY" "$ROOT/db.py"
 

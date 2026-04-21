@@ -1,63 +1,65 @@
 services:
   ollama:
-    # Abweichung: Version gepinnt (statt :latest), damit Updates kontrolliert sind
-    # Alt: ollama/ollama:latest
-    # Neu: ollama/ollama:0.17.6 (Update von 0.15.6 für Qwen 3.5 Support)
-
+    # Pinned image version (not :latest) for controlled updates.
+    # Image-Version gepinnt (nicht :latest), fuer kontrollierte Updates.
     image: ollama/ollama:0.17.6
 
     container_name: ollama
     restart: unless-stopped
     networks: [openllm-net]
 
-    # Abweichung: Ports unverändert wie alt (11434 auf LAN + WLAN IP)
+    # Bind to host IP(s) from .env. Use BIND_IP=0.0.0.0 for all interfaces.
+    # Bindet an Host-IP(s) aus .env. BIND_IP=0.0.0.0 = alle Interfaces.
     ports:
       - "${BIND_IP}:11434:11434"
       - "${BIND_IP_WLAN}:11434:11434"
 
-    # Abweichung: DNS-Fix bleibt drin (war bei dir schon ergänzt), damit registry.ollama.ai zuverlässig auflösbar ist
+    # External DNS for reliable resolution of registry.ollama.ai.
+    # Externe DNS fuer zuverlaessige Aufloesung von registry.ollama.ai.
     dns:
       - 1.1.1.1
       - 8.8.8.8
 
-    # Abweichung: Persistenzpfad umgezogen von /opt/ollama -> /srv/Container/ollama
-    # Alt: /opt/ollama:/root/.ollama
-    # Neu: /srv/Container/ollama:/root/.ollama
+    # Persistence path is composable via DATA_ROOT in .env.
+    # Persistenzpfad ueber DATA_ROOT in .env konfigurierbar.
     volumes:
-      - /srv/Container/ollama:/root/.ollama
+      - ${DATA_ROOT}/ollama:/root/.ollama
 
     environment:
       # ── Scheduling & Queuing ──
-      # Alt: NUM_PARALLEL=3, MAX_LOADED_MODELS=3 (VRAM-Thrashing bei Multi-Client-Zugriff)
-      # Neu: 1 Slot pro Modell spart ~4-8 GB KV-Cache; 2 Modelle = Chat + Embedding für RAG
+      # 1 slot per model saves ~4-8 GB KV-cache; 2 loaded models = chat + embedding for RAG.
+      # 1 Slot pro Modell spart ~4-8 GB KV-Cache; 2 Modelle = Chat + Embedding fuer RAG.
       OLLAMA_NUM_PARALLEL: "1"
       OLLAMA_MAX_LOADED_MODELS: "2"
-      # Warteschlange: Requests warten statt Modelle zu entladen (Default: 512)
+      # Queue depth: requests wait instead of forcing model unload (default 512).
+      # Warteschlange: Requests warten statt Modelle zu entladen (Default 512).
       OLLAMA_MAX_QUEUE: "16"
-      # Idle-Modelle nach 10 Min entladen (Default: 5m); gibt RAG-Workflows genug Puffer
+      # Unload idle models after 10 min (default 5m); buffer for RAG workflows.
+      # Idle-Modelle nach 10 Min entladen (Default 5m); Puffer fuer RAG-Workflows.
       OLLAMA_KEEP_ALIVE: "10m"
 
       # ── Logging ──
-      # Debug-Modus: Loggt Modellname, Token-Counts und Timings pro Request
+      # Debug mode: logs model name, token counts, timings per request.
+      # Debug-Modus: loggt Modellname, Token-Counts und Timings pro Request.
       OLLAMA_DEBUG: "1"
 
-      # ── Context & Speicher ──
-      # Alt (Testweise deaktiviert):
-      # OLLAMA_CONTEXT_LENGTH: "32768"
-      # Neu fuer Long-Context-Test (256k):
+      # ── Context & memory ──
+      # Long-context test (256k); revert to 32768 if VRAM-tight.
+      # Long-Context-Test (256k); auf 32768 zurueck wenn VRAM knapp.
       OLLAMA_CONTEXT_LENGTH: "262144"
-      # Flash Attention: reduziert KV-Cache VRAM-Verbrauch um ~30-50%
+      # Flash Attention reduces KV-cache VRAM by ~30-50%.
+      # Flash Attention reduziert KV-Cache VRAM um ~30-50%.
       OLLAMA_FLASH_ATTENTION: "1"
-      # 2 GiB Reserve = konservativ, praxistauglich
+      # 2 GiB reserve = conservative, practical.
+      # 2 GiB Reserve = konservativ, praxistauglich.
       OLLAMA_GPU_OVERHEAD: "2147483648"
 
       # ── GPU ──
-      # Beide GPUs sichtbar (3090 Ti 24 GB + 5060 Ti 16 GB = 40 GB VRAM gesamt)
-      # Ollama verteilt Layers automatisch auf beide GPUs wenn ein Modell nicht auf eine passt
+      # All visible GPUs; Ollama auto-distributes layers if a model exceeds one card.
+      # Alle sichtbaren GPUs; Ollama verteilt Layers automatisch wenn Modell zu gross fuer eine.
       NVIDIA_VISIBLE_DEVICES: "all"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
 
-    # Wie alt: NVIDIA runtime
     runtime: nvidia
 
     healthcheck:
@@ -67,9 +69,8 @@ services:
       retries: 5
 
   openwebui:
-    # Abweichung: Version gepinnt (statt :latest), damit Updates kontrolliert sind
-    # Alt: ghcr.io/open-webui/open-webui:latest
-    # Neu: ghcr.io/open-webui/open-webui:v0.6.43
+    # Pinned image version (not :latest) for controlled updates.
+    # Image-Version gepinnt (nicht :latest), fuer kontrollierte Updates.
     image: ghcr.io/open-webui/open-webui:v0.6.43
 
     container_name: openwebui
@@ -78,17 +79,19 @@ services:
     depends_on:
       - ollama
 
-    # Abweichung: Port per .env steuerbar (Standard 3000 empfohlen)
-    # Alt: im Ausschnitt ohne Ports (vermutlich extern anders gelöst oder Default)
+    # External port from .env (default 3000).
+    # Externer Port aus .env (Default 3000).
     ports:
       - "${BIND_IP}:${OPENWEBUI_PORT}:8080"
 
-    # Abweichung: Persistenzpfad umgezogen nach /srv/Container/openwebui
+    # Persistence path is composable via DATA_ROOT in .env.
+    # Persistenzpfad ueber DATA_ROOT in .env konfigurierbar.
     volumes:
-      - /srv/Container/openwebui:/app/backend/data
+      - ${DATA_ROOT}/openwebui:/app/backend/data
 
     environment:
-      # Wie neu-standard: WebUI spricht intern den ollama-Service über Docker-Netz an
+      # WebUI talks to ollama internally over the docker network.
+      # WebUI spricht intern den ollama-Service ueber Docker-Netz an.
       OLLAMA_BASE_URL: "http://ollama:11434"
 
 networks:
