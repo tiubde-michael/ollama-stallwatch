@@ -171,22 +171,33 @@ sudo systemctl status ollama-dashboard     # Web-Dashboard auf Port 3002
 **`gpu_metrics`**: timestamp, gpu_id, gpu_name, vram_used_mib, vram_total_mib, utilization_gpu, temperature, power_draw_w
 **`ollama_requests`**: timestamp, client_ip, method, endpoint, status, duration_ms, model, prompt_tokens
 **`system_metrics`**: timestamp, proc_role (serve/runner), host_pid, cpu_percent, rss_mib, num_threads, host_load1, host_mem_used_mib
-**`stall_events`**: id, start_ts, end_ts, gpu_id, vram_used_mib, ollama_serve_cpu, ollama_serve_rss_mib, model, stack_path, request_active
+**`stall_events`**: id, start_ts, end_ts, gpu_id, vram_used_mib, ollama_serve_cpu, ollama_serve_rss_mib, model, stack_path, request_active, confidence (strict/loose/ghost), mode (A/B), max_util_recent, client_ip, notes
 
 ### REST API (Port 3002)
 
 - `GET /api/health` — `{ok: true, host: ...}`
-- `GET /api/stalls?since=ISO&limit=N` — list stall_events (open if `end=null`)
+- `GET /api/stalls?since=&at=&overlapping=A,B&confidence=&mode=&client_ip=&limit=` — filtered stall_events (open if `end=null`)
 - `GET /api/stalls/<id>/stack` — plain-text stack dump
-- `GET /api/requests?model=&since=&min_duration_ms=&client_ip=&status=&...` — filtered ollama_requests
+- `GET /api/requests?model=&since=&until=&endpoint=&client_ip=&status=&min_duration_ms=&max_duration_ms=&limit=` — filtered ollama_requests
 - `GET /api/system?since=ISO` — system_metrics time series
+- `GET /api/gpu/live` — fresh nvidia-smi snapshot (queries device directly, always current)
+- `GET /api/gpu/series?since=&gpu_id=` — gpu_metrics time series (delta-logged: rows only when values change)
+
+Stall confidence levels (run in parallel, highest-conf wins):
+- `strict`: `vram>1GiB AND util<=5% AND power<=50W AND serve_cpu>=50%` for 6 polls (30s)
+- `loose`: same shape with `power<=75W`, satisfied for 80% of last 30s sliding window
+- `ghost`: `vram>1GiB AND util<=5% AND request_active AND serve_cpu<50%` for 30s (opposite signature — request accepted but nothing running anywhere)
+
+Stall mode (orthogonal to confidence):
+- `A` = stream-then-stall (GPU produced decode work in last 60s before stall — partial output may exist)
+- `B` = silent (no GPU activity in last 60s — nothing to recover)
 
 ### Details
 
 - **GPU Logger**: Pollt `nvidia-smi` alle 10s, schreibt nur bei Wertaenderung (Delta-Logging)
 - **Log Parser**: Folgt `docker compose logs ollama`, extrahiert Modell, Prompt-Tokens, Dauer, Client-IP. Erkennt sowohl offizielle Modelle (`library/`) als auch Community-Modelle (z.B. `alibayram/medgemma`).
-- **Process Logger**: liest `/proc/<host_pid>/{stat,status}` fuer ollama serve + runner alle 10s; berechnet CPU% als Delta ueber Intervall.
-- **Stall Detector**: alle 5s; wenn pro GPU `vram>1GB AND util<=5% AND power<=50W AND serve_cpu>=50%` fuer 6 Polls in Folge (=30s), wird ein `stall_event` geschrieben + Stack-Dump (Threads, /proc kernel-stacks via sudo, gdb backtrace) nach `monitoring/stalls/<ts>_pid<N>.txt`. Sudoers in `/etc/sudoers.d/ollama-monitor`.
+- **Process Logger**: liest `/proc/<host_pid>/{stat,status}` fuer ollama serve + runner alle 10s; berechnet CPU% als Delta ueber Intervall. Heartbeat-Write alle 60s auch ohne Delta. Negative CPU% (PID-reuse) werden auf 0 geclampt.
+- **Stall Detector**: alle 5s; drei parallele Kriterien (strict/loose/ghost) — siehe REST-API-Section oben. Bei Open: gleichzeitig `mode` (A/B basierend auf MAX(util) der letzten 60s) und `client_ip` (most-recent /api/generate Request der letzten 5min) erfasst. Stack-Dump (Threads, /proc kernel-stacks via sudo, gdb backtrace) nach `monitoring/stalls/<ts>_pid<N>.txt`. Sudoers in `/etc/sudoers.d/ollama-monitor`. Bei Detector-Restart werden orphan-Events automatisch geschlossen.
 - **Retention**: Cron deletes DB rows + stack files older than 30 days (`/etc/cron.d/ollama-monitor-retention`).
 - **DB**: `monitoring/monitor.db` (SQLite WAL mode).
 - **Dashboard**: Chart.js, wird bei jedem Seitenaufruf live aus SQLite generiert; rote Banderolen markieren Stall-Fenster auf GPU+CPU-Charts.

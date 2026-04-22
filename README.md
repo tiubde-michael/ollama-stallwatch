@@ -71,26 +71,33 @@ self-contained HTML dashboard (Chart.js) and as a small REST API.
 | Endpoint | What it returns |
 |---|---|
 | `GET /api/health` | `{ok: true, host: ...}` |
-| `GET /api/stalls?since=ISO&limit=N&confidence=strict\|loose` | List of stall events |
-| `GET /api/stalls?at=ISO` | Stalls active at a given timestamp |
-| `GET /api/stalls?overlapping=START,END` | Stalls overlapping a time range |
+| `GET /api/stalls?...` | Stall events (filters below) |
 | `GET /api/stalls/<id>/stack` | Plain-text stack capture (gdb + /proc) |
-| `GET /api/requests?model=&since=&min_duration_ms=&client_ip=&...` | Filtered request history |
+| `GET /api/requests?...` | Filtered request history |
 | `GET /api/system?since=ISO` | CPU/RAM time series for `ollama serve` and runner |
+| `GET /api/gpu/live` | Fresh `nvidia-smi` snapshot (always current) |
+| `GET /api/gpu/series?since=&gpu_id=` | GPU metrics time series (delta-logged) |
 
-**Stall detector** flags this pattern (per GPU, per 5s poll):
+`/api/stalls` filters (combinable):
+- `since=ISO` — events starting after this timestamp (default: epoch)
+- `at=ISO` — events that were active at this timestamp
+- `overlapping=START,END` — events overlapping this time range
+- `confidence=strict|loose|ghost` — by detection class
+- `mode=A|B` — `A` = stream-then-stall (GPU was active), `B` = silent (GPU never produced output)
+- `client_ip=<ip>` — best-guess client of the stalling request
+- `limit=N` — default 100
 
-```
-vram_used > 1 GiB
-AND gpu_utilization <= 5%
-AND ollama_serve_cpu >= 50%
-AND power_draw <= threshold (50W strict / 75W loose)
-```
+`/api/requests` filters: `model`, `since`, `until`, `endpoint`, `client_ip`, `min_duration_ms`, `max_duration_ms`, `status`, `limit`.
 
-Sustained for ~30s (continuous strict, or 80% sliding-window loose).
-On a confirmed stall, the detector dumps `/proc/<pid>/task/*/{stack,wchan,stat}`
-plus a `gdb -batch thread apply all bt` to `monitoring/stalls/<ts>.txt` and
-links it from the dashboard.
+**Stall detector** classifies hangs into three confidence levels, run in parallel:
+
+| Confidence | Trigger pattern (per GPU) |
+|---|---|
+| `strict` | `vram>1GiB AND util<=5% AND power<=50W AND serve_cpu>=50%` for 30s continuous |
+| `loose` | same shape with `power<=75W`, satisfied for 80% of the last 30s sliding window |
+| `ghost` | `vram>1GiB AND util<=5% AND request_active AND serve_cpu<50%` for 30s — opposite signature: Ollama took the request but neither GPU nor CPU is doing anything |
+
+Each event is also tagged with **`mode`**: `A` if GPU did decode work in the 60s before the stall (recoverable — partial output may be salvageable), `B` if it never did (silent — nothing to recover). On stall open, the detector dumps `/proc/<pid>/task/*/{stack,wchan,stat}` plus a `gdb -batch thread apply all bt` to `monitoring/stalls/<ts>.txt` and links it from the dashboard.
 
 See `CLAUDE.md` for table schemas and per-collector details.
 
