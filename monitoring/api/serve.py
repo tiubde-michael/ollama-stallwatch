@@ -60,22 +60,25 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         if path == "/api/stalls":
             limit = int(qs.get("limit", ["100"])[0])
-            confidence = qs.get("confidence", [None])[0]  # 'strict' | 'loose' | 'ghost'
-            mode = qs.get("mode", [None])[0]              # 'A' | 'B'
+            filters = {
+                "confidence": qs.get("confidence", [None])[0],   # 'strict'|'loose'|'ghost'
+                "mode": qs.get("mode", [None])[0],               # 'A'|'B'
+                "client_ip": qs.get("client_ip", [None])[0],     # exact IP match
+            }
             at = qs.get("at", [None])[0]
             overlapping = qs.get("overlapping", [None])[0]
             if at:
                 return json_response(self, self._query_stalls_overlap(
-                    at, at, limit, confidence, mode))
+                    at, at, limit, **filters))
             if overlapping:
                 try:
                     a, b = overlapping.split(",", 1)
                 except ValueError:
                     return text_response(self, "overlapping must be 'start,end'\n", 400)
                 return json_response(self, self._query_stalls_overlap(
-                    a.strip(), b.strip(), limit, confidence, mode))
+                    a.strip(), b.strip(), limit, **filters))
             since = qs.get("since", ["1970-01-01T00:00:00Z"])[0]
-            return json_response(self, self._query_stalls(since, limit, confidence, mode))
+            return json_response(self, self._query_stalls(since, limit, **filters))
 
         if path.startswith("/api/stalls/"):
             parts = path.split("/")
@@ -116,28 +119,29 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "ollama_serve_rss_mib": r[6], "model": r[7],
                 "stack_url": (f"/api/stalls/{r[0]}/stack" if r[8] else None),
                 "request_active": r[9], "confidence": r[10],
-                "mode": r[11], "max_util_recent_pct": r[12]}
+                "mode": r[11], "max_util_recent_pct": r[12],
+                "client_ip": r[13]}
 
     SELECT_STALL = ("SELECT id, start_ts, end_ts, gpu_id, vram_used_mib, "
                     "ollama_serve_cpu, ollama_serve_rss_mib, model, stack_path, "
-                    "request_active, confidence, mode, max_util_recent "
+                    "request_active, confidence, mode, max_util_recent, client_ip "
                     "FROM stall_events ")
 
     def _stall_filters(self, qs_or_dict):
-        """Build common filter clauses from confidence + mode parameters."""
+        """Build common filter clauses from confidence/mode/client_ip params."""
         clauses, params = [], []
-        conf = qs_or_dict.get("confidence") if isinstance(qs_or_dict, dict) else None
-        mode = qs_or_dict.get("mode") if isinstance(qs_or_dict, dict) else None
-        if conf:
-            clauses.append("confidence = ?"); params.append(conf)
-        if mode:
-            clauses.append("mode = ?"); params.append(mode)
+        for field in ("confidence", "mode", "client_ip"):
+            val = qs_or_dict.get(field) if isinstance(qs_or_dict, dict) else None
+            if val:
+                clauses.append(f"{field} = ?")
+                params.append(val)
         return clauses, params
 
-    def _query_stalls(self, since, limit, confidence=None, mode=None):
+    def _query_stalls(self, since, limit, confidence=None, mode=None, client_ip=None):
         where = ["start_ts > ?"]
         params = [since]
-        extra, eparams = self._stall_filters({"confidence": confidence, "mode": mode})
+        extra, eparams = self._stall_filters({
+            "confidence": confidence, "mode": mode, "client_ip": client_ip})
         where.extend(extra); params.extend(eparams)
         params.append(limit)
         conn = connect()
@@ -149,12 +153,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "items": [self._row_to_stall(r) for r in rows]}
 
     def _query_stalls_overlap(self, range_start, range_end, limit,
-                              confidence=None, mode=None):
+                              confidence=None, mode=None, client_ip=None):
         # An event overlaps [range_start, range_end] iff:
         #   start_ts <= range_end AND (end_ts IS NULL OR end_ts >= range_start)
         where = ["start_ts <= ?", "(end_ts IS NULL OR end_ts >= ?)"]
         params = [range_end, range_start]
-        extra, eparams = self._stall_filters({"confidence": confidence, "mode": mode})
+        extra, eparams = self._stall_filters({
+            "confidence": confidence, "mode": mode, "client_ip": client_ip})
         where.extend(extra); params.extend(eparams)
         params.append(limit)
         conn = connect()
@@ -164,7 +169,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         conn.close()
         return {"host": CONFIG["host_id"],
                 "query": {"range_start": range_start, "range_end": range_end,
-                          "confidence": confidence, "mode": mode},
+                          "confidence": confidence, "mode": mode,
+                          "client_ip": client_ip},
                 "items": [self._row_to_stall(r) for r in rows]}
 
     def _serve_stack(self, stall_id):

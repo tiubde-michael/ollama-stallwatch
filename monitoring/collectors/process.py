@@ -149,6 +149,12 @@ def main():
                     dt = now - ptime
                     if dt > 0:
                         cpu_percent = round(((ticks - pticks) / CLK_TCK / dt) * 100, 1)
+                # Clamp negative values (PID-reuse on container restart can
+                # produce a negative tick delta when a different process
+                # inherits the old PID).
+                if cpu_percent < 0:
+                    cpu_percent = 0.0
+                    prev_ticks.pop(key, None)  # reset baseline
                 prev_ticks[key] = (ticks, now)
 
                 record = {

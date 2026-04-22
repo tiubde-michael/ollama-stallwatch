@@ -219,6 +219,22 @@ def classify_mode(conn):
     return ("A" if max_util > MODE_A_UTIL_THRESHOLD else "B"), max_util
 
 
+def guess_client_ip(conn):
+    """Best-effort: most recent inference request in the past 5 min that
+    is not a localhost healthcheck. Single-tenant assumption: one client
+    dominates at a time. If multiple distinct IPs are active, the most
+    recent one wins (which is the request most likely to be the stalled
+    one). NULL if no recent traffic."""
+    row = conn.execute(
+        "SELECT client_ip FROM ollama_requests "
+        "WHERE timestamp > strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-5 minutes') "
+        "  AND client_ip != '127.0.0.1' "
+        "  AND endpoint IN ('/api/generate', '/api/chat') "
+        "ORDER BY timestamp DESC LIMIT 1"
+    ).fetchone()
+    return row[0] if row else None
+
+
 def close_orphan_events(conn):
     """On detector startup, any stall_event with end_ts IS NULL is from a
     previous instance that was killed mid-event. We can't tell post-hoc
@@ -345,14 +361,15 @@ def main():
                 except Exception as e:
                     print(f"capture failed: {e}", file=sys.stderr)
                 mode, max_util = classify_mode(conn)
+                client_ip = guess_client_ip(conn)
                 cur = conn.execute(
                     "INSERT INTO stall_events (start_ts, gpu_id, vram_used_mib, "
                     "ollama_serve_cpu, ollama_serve_rss_mib, model, stack_path, "
-                    "request_active, confidence, mode, max_util_recent) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "request_active, confidence, mode, max_util_recent, client_ip) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (now_iso(), trigger_gpu, trigger_vram, round(serve_cpu, 1), rss,
                      model, str(path) if path else None, active, new_conf,
-                     mode, max_util)
+                     mode, max_util, client_ip)
                 )
                 open_event_id = cur.lastrowid
                 open_event_confidence = new_conf

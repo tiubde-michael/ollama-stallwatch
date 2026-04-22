@@ -124,6 +124,12 @@ def init_schema(conn):
         # Captured at event-open time: max GPU util over the last 60s.
         # Used to derive mode and as raw evidence for post-mortem.
         conn.execute("ALTER TABLE stall_events ADD COLUMN max_util_recent INTEGER")
+    if "client_ip" not in cols:
+        # Best-guess client_ip of the stalling request — taken from the
+        # most recent /api/generate or /api/chat in ollama_requests at
+        # event-open time. Lets consumers filter out other clients
+        # (Open WebUI, etc.) when correlating their own requests.
+        conn.execute("ALTER TABLE stall_events ADD COLUMN client_ip TEXT")
     conn.commit()
 
 
