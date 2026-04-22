@@ -26,20 +26,34 @@ COMPLETION_PATTERN = re.compile(r'msg="completion request".*?prompt=(\d+)')
 
 
 def parse_duration(dur_str):
+    """Parse Go's time.Duration string (e.g. '1h2m3s', '4.999605ms', '8.005s').
+
+    Each unit is matched with a strict suffix to avoid e.g. '999605m' being
+    pulled out of '4.999605ms'. Hours/minutes/seconds are word-boundary'd
+    so they don't bleed into ms/us/ns.
+    """
     dur_str = dur_str.strip()
     total_ms = 0.0
-    m = re.search(r'(\d+)m', dur_str)
+    h = re.search(r'(\d+(?:\.\d+)?)h', dur_str)
+    if h:
+        total_ms += float(h.group(1)) * 3_600_000
+    m = re.search(r'(\d+(?:\.\d+)?)m(?![sn])', dur_str)  # m not followed by s/n
     if m:
-        total_ms += int(m.group(1)) * 60_000
-    s = re.search(r'([\d.]+)s(?!.*[um])', dur_str) or re.search(r'([\d.]+)s$', dur_str)
+        total_ms += float(m.group(1)) * 60_000
+    s = re.search(r'(\d+(?:\.\d+)?)s$', dur_str)        # s only at end of string
+    if not s:
+        s = re.search(r'(?<![mun\xb5])(\d+(?:\.\d+)?)s', dur_str)  # s not preceded by m/u/n/µ
     if s:
         total_ms += float(s.group(1)) * 1000
-    ms = re.search(r'([\d.]+)ms', dur_str)
+    ms = re.search(r'(\d+(?:\.\d+)?)ms', dur_str)
     if ms:
         total_ms += float(ms.group(1))
-    us = re.search(r'([\d.]+)[uµ]s', dur_str)
+    us = re.search(r'(\d+(?:\.\d+)?)[uµ]s', dur_str)
     if us:
         total_ms += float(us.group(1)) / 1000
+    ns = re.search(r'(\d+(?:\.\d+)?)ns', dur_str)
+    if ns:
+        total_ms += float(ns.group(1)) / 1_000_000
     return round(total_ms, 3)
 
 

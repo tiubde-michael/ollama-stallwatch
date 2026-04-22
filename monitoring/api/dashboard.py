@@ -11,6 +11,11 @@ from db import CONFIG, connect
 
 OUT_PATH = Path(__file__).parent / "dashboard.html"
 
+# Sane caps for the prompt-vs-duration scatter to drop garbage outliers
+# (we used to have a parse_duration bug that produced 60M-second values).
+MAX_DURATION_SEC = 600     # 10 min cap; longer = filtered as suspect
+MAX_PROMPT_TOKENS = 50000  # most legitimate prompts fit in this
+
 
 def query_gpu_timeseries(conn, since):
     rows = conn.execute("""
@@ -57,8 +62,14 @@ def query_prompt_sizes(conn, since):
         FROM ollama_requests
         WHERE timestamp > ? AND prompt_tokens IS NOT NULL ORDER BY timestamp
     """, (since,)).fetchall()
-    return {"ts": [r[0] for r in rows], "model": [r[1] for r in rows],
-            "tokens": [r[2] for r in rows], "duration": [r[3] for r in rows]}
+    # Filter outliers (legacy data from parser bug had 60M-second values)
+    kept = [(t, m, tok, dur) for t, m, tok, dur in rows
+            if tok is not None and dur is not None
+            and tok <= MAX_PROMPT_TOKENS and dur / 1000 <= MAX_DURATION_SEC]
+    dropped = len(rows) - len(kept)
+    return {"ts": [r[0] for r in kept], "model": [r[1] for r in kept],
+            "tokens": [r[2] for r in kept], "duration": [r[3] for r in kept],
+            "outliers_dropped": dropped}
 
 
 def query_system_metrics(conn, since):
@@ -88,12 +99,45 @@ def query_system_metrics(conn, since):
 def query_stall_events(conn, since):
     rows = conn.execute("""
         SELECT id, start_ts, end_ts, gpu_id, vram_used_mib, ollama_serve_cpu,
-               ollama_serve_rss_mib, model, stack_path, request_active
+               ollama_serve_rss_mib, model, stack_path, request_active,
+               confidence, mode
         FROM stall_events WHERE start_ts > ? ORDER BY start_ts DESC
     """, (since,)).fetchall()
     return [{"id": r[0], "start": r[1], "end": r[2], "gpu_id": r[3],
              "vram": r[4], "serve_cpu": r[5], "serve_rss": r[6],
-             "model": r[7], "stack": r[8], "active": r[9]} for r in rows]
+             "model": r[7], "stack": r[8], "active": r[9],
+             "confidence": r[10], "mode": r[11]} for r in rows]
+
+
+def render_stall_row(s, generated):
+    """One <tr> for a stall event."""
+    dur = ""
+    if s["start"] and s["end"]:
+        try:
+            a = datetime.fromisoformat(s["start"].replace("Z", "+00:00"))
+            b = datetime.fromisoformat(s["end"].replace("Z", "+00:00"))
+            dur = f"{int((b - a).total_seconds())}s"
+        except Exception:
+            pass
+    elif s["start"] and not s["end"]:
+        dur = "OPEN"
+    stack = (f'<a href="/api/stalls/{s["id"]}/stack" style="color:#60a5fa">view</a>'
+             if s["stack"] else "—")
+    conf = s["confidence"] or "—"
+    mode = s["mode"] or "—"
+    return (f'<tr><td><span class="badge-stall">#{s["id"]}</span></td>'
+            f'<td>{s["start"]}</td><td>{s["end"] or "—"}</td><td>{dur}</td>'
+            f'<td>{conf}/{mode}</td>'
+            f'<td>{s["gpu_id"]}</td><td>{s["vram"]} MiB</td>'
+            f'<td>{(s["serve_cpu"] or 0):.0f}%</td>'
+            f'<td>{s["model"] or "—"}</td><td>{stack}</td></tr>')
+
+
+STALL_TABLE_HEAD = (
+    '<table class="stalls"><tr><th>ID</th><th>Start (UTC)</th><th>Ende</th>'
+    '<th>Dauer</th><th>conf/mode</th><th>GPU</th><th>VRAM</th>'
+    '<th>serve CPU</th><th>Model</th><th>Stack</th></tr>'
+)
 
 
 def generate_html(hours):
@@ -121,8 +165,36 @@ def generate_html(hours):
             stall_bands.append({
                 "start": s["start"],
                 "end": s["end"] or generated.replace(" ", "T") + "Z",
-                "label": f"#{s['id']} {s['model'] or '?'} ({s['serve_cpu']:.0f}% CPU)" if s['serve_cpu'] else f"#{s['id']}"
+                "label": (f"#{s['id']} {s['model'] or '?'} "
+                          f"({(s['serve_cpu'] or 0):.0f}% CPU)")
             })
+
+    # Stall section: first 3 visible, rest collapsible
+    stall_html = ""
+    if not stalls:
+        stall_html = '<p class="no-stalls">Keine Stalls im Zeitraum.</p>'
+    else:
+        head_3 = stalls[:3]
+        tail = stalls[3:]
+        stall_html = STALL_TABLE_HEAD
+        for s in head_3:
+            stall_html += render_stall_row(s, generated)
+        stall_html += "</table>"
+        if tail:
+            stall_html += (f'<details style="margin-top:8px;">'
+                           f'<summary style="cursor:pointer; color:#888; font-size:0.85em; '
+                           f'padding:6px 0;">▸ {len(tail)} weitere Stall-Events</summary>'
+                           f'{STALL_TABLE_HEAD}')
+            for s in tail:
+                stall_html += render_stall_row(s, generated)
+            stall_html += "</table></details>"
+
+    # Time-range nav with active highlight
+    ranges = [(1, "1h"), (6, "6h"), (24, "24h"), (168, "7d"), (720, "30d")]
+    nav_html = ""
+    for h, lbl in ranges:
+        cls = ' class="active"' if h == hours else ""
+        nav_html += f'<a href="/?h={h}"{cls}>{lbl}</a> '
 
     html = f"""<!DOCTYPE html>
 <html lang="de">
@@ -147,6 +219,7 @@ canvas {{ max-height: 280px; }}
 .nav a {{ color: #60a5fa; text-decoration: none; padding: 4px 12px;
           border: 1px solid #333; border-radius: 4px; font-size: 0.9em; }}
 .nav a:hover {{ background: #1e293b; }}
+.nav a.active {{ background: #1e40af; color: #fff; border-color: #1e40af; }}
 table.stalls {{ width: 100%; border-collapse: collapse; font-size: 0.85em; }}
 table.stalls th, table.stalls td {{ padding: 6px 10px; text-align: left;
                                     border-bottom: 1px solid #2a2d3a; }}
@@ -154,63 +227,53 @@ table.stalls th {{ color: #888; font-weight: normal; }}
 .badge-stall {{ background: #dc2626; color: white; padding: 2px 8px;
                 border-radius: 4px; font-size: 0.85em; }}
 .no-stalls {{ color: #4ade80; }}
+details summary:hover {{ color: #60a5fa; }}
+.note {{ color: #666; font-size: 0.78em; margin-top: 4px; }}
 @media (max-width: 768px) {{ .grid {{ grid-template-columns: 1fr; }} }}
 </style>
 </head>
 <body>
 <h1>Ollama Monitor — {host}</h1>
 <p class="meta">Zeitraum: {label} | Erzeugt: {generated} | <a href="/api/stalls" style="color:#60a5fa">/api/stalls</a> · <a href="/api/requests" style="color:#60a5fa">/api/requests</a></p>
-<div class="nav">
-  <a href="/?h=1">1h</a> <a href="/?h=6">6h</a> <a href="/?h=24">24h</a>
-  <a href="/?h=168">7d</a> <a href="/?h=720">30d</a>
-</div>
+<div class="nav">{nav_html}</div>
 
 <div class="card full" style="margin-bottom:16px;">
   <h2>Stall-Events (Hang-Verdacht: VRAM belegt + GPU 0% + serve CPU hoch)</h2>
-  {'<p class="no-stalls">Keine Stalls im Zeitraum.</p>' if not stalls else ''}
-  {'<table class="stalls"><tr><th>ID</th><th>Start (UTC)</th><th>Ende</th><th>Dauer</th><th>GPU</th><th>VRAM</th><th>serve CPU</th><th>Model</th><th>Stack</th></tr>' if stalls else ''}
-"""
-    for s in stalls:
-        dur = ""
-        if s["start"] and s["end"]:
-            try:
-                a = datetime.fromisoformat(s["start"].replace("Z", "+00:00"))
-                b = datetime.fromisoformat(s["end"].replace("Z", "+00:00"))
-                dur = f"{int((b - a).total_seconds())}s"
-            except Exception:
-                pass
-        elif s["start"] and not s["end"]:
-            dur = "OPEN"
-        stack_link = f'<a href="/api/stalls/{s["id"]}/stack" style="color:#60a5fa">view</a>' if s["stack"] else "—"
-        html += (f'<tr><td><span class="badge-stall">#{s["id"]}</span></td>'
-                 f'<td>{s["start"]}</td><td>{s["end"] or "—"}</td><td>{dur}</td>'
-                 f'<td>{s["gpu_id"]}</td><td>{s["vram"]} MiB</td>'
-                 f'<td>{s["serve_cpu"] or 0:.0f}%</td>'
-                 f'<td>{s["model"] or "—"}</td><td>{stack_link}</td></tr>')
-    if stalls:
-        html += "</table>"
-
-    html += f"""
+  {stall_html}
 </div>
 
 <div class="grid">
   <div class="card full"><h2>GPU VRAM (MiB)</h2><canvas id="vramChart"></canvas></div>
-  <div class="card"><h2>GPU Auslastung %</h2><canvas id="utilChart"></canvas></div>
-  <div class="card"><h2>GPU Temp / Power</h2><canvas id="tempChart"></canvas></div>
+  <div class="card full"><h2>GPU Auslastung %</h2><canvas id="utilChart"></canvas></div>
+  <div class="card full"><h2>GPU Temp / Power</h2><canvas id="tempChart"></canvas></div>
   <div class="card full"><h2>Ollama serve — CPU% / RSS (MiB)</h2><canvas id="sysChart"></canvas></div>
   <div class="card"><h2>Requests pro Stunde</h2><canvas id="reqChart"></canvas></div>
   <div class="card"><h2>Modell-Verteilung</h2><canvas id="modelChart"></canvas></div>
-  <div class="card full"><h2>Prompt-Tokens vs Dauer</h2><canvas id="promptChart"></canvas></div>
+  <div class="card full">
+    <h2>Prompt-Tokens vs Dauer</h2>
+    <canvas id="promptChart"></canvas>
+    {('<p class="note">' + str(prompt_data["outliers_dropped"]) + ' Outlier ausgefiltert (Dauer>' + str(MAX_DURATION_SEC) + 's oder Prompt>' + str(MAX_PROMPT_TOKENS) + ').</p>') if prompt_data["outliers_dropped"] else ''}
+  </div>
 </div>
 
 <script>
-const COLORS = ['#60a5fa', '#f472b6', '#34d399', '#fbbf24', '#a78bfa', '#fb923c'];
+const COLORS = ['#60a5fa', '#f472b6', '#34d399', '#fbbf24', '#a78bfa', '#fb923c', '#22d3ee', '#facc15'];
 const GPU = {json.dumps(gpu_data, default=str)};
 const REQ = {json.dumps(req_data)};
 const MODEL = {json.dumps(model_data)};
 const PROMPT = {json.dumps(prompt_data)};
 const SYS = {json.dumps(sys_data)};
 const STALLS = {json.dumps(stall_bands)};
+
+// Build a stable model -> color map (shared by Modell-Verteilung and Prompt scatter)
+const MODEL_COLOR = {{}};
+MODEL.labels.forEach((m, i) => {{ MODEL_COLOR[m] = COLORS[i % COLORS.length]; }});
+function colorForModel(m) {{
+  if (!MODEL_COLOR[m]) {{
+    MODEL_COLOR[m] = COLORS[Object.keys(MODEL_COLOR).length % COLORS.length];
+  }}
+  return MODEL_COLOR[m];
+}}
 
 Chart.defaults.color = '#888';
 Chart.defaults.borderColor = '#2a2d3a';
@@ -223,7 +286,6 @@ function timeAxis() {{
            ticks: {{ maxTicksLimit: 12 }} }};
 }}
 
-// Stall band overlay plugin
 const stallPlugin = {{
   id: 'stallBands',
   beforeDraw(chart) {{
@@ -258,7 +320,7 @@ new Chart('vramChart', {{ type: 'line', data: {{ datasets: vramDs }},
     plugins: {{ legend: {{ position: 'bottom' }} }} }},
   plugins: [stallPlugin] }});
 
-// Util
+// Util %
 const utilDs = [];
 Object.entries(GPU).forEach(([id, g], i) => {{
   utilDs.push({{ label: g.name,
@@ -286,9 +348,10 @@ new Chart('tempChart', {{ type: 'line', data: {{ datasets: tempDs }},
     y: {{ beginAtZero: true, position: 'left', title: {{ display: true, text: 'C' }} }},
     y1: {{ beginAtZero: true, position: 'right', title: {{ display: true, text: 'W' }},
            grid: {{ drawOnChartArea: false }} }} }},
-    plugins: {{ legend: {{ position: 'bottom' }} }} }} }});
+    plugins: {{ legend: {{ position: 'bottom' }} }} }},
+  plugins: [stallPlugin] }});
 
-// System metrics (serve cpu+rss, runner cpu+rss)
+// System metrics
 const sysDs = [];
 ['serve', 'runner'].forEach((role, i) => {{
   const s = SYS[role];
@@ -318,23 +381,50 @@ if (REQ.hours.length > 0) {{
     plugins: {{ legend: {{ display: false }} }} }} }});
 }}
 
-// Model pie
+// Model pie — uses MODEL_COLOR mapping
 if (MODEL.labels.length > 0) {{
   new Chart('modelChart', {{ type: 'doughnut', data: {{
     labels: MODEL.labels,
-    datasets: [{{ data: MODEL.counts, backgroundColor: COLORS.slice(0, MODEL.labels.length) }}]
+    datasets: [{{ data: MODEL.counts,
+                 backgroundColor: MODEL.labels.map(m => colorForModel(m)) }}]
   }}, options: {{ plugins: {{ legend: {{ position: 'right' }} }} }} }});
 }}
 
-// Prompt scatter
+// Prompt scatter — one dataset per model so legend names them and colors match
 if (PROMPT.ts.length > 0) {{
-  new Chart('promptChart', {{ type: 'scatter', data: {{
-    datasets: [{{ label: 'Prompt vs Dauer',
-      data: PROMPT.ts.map((t, i) => ({{ x: PROMPT.tokens[i], y: PROMPT.duration[i] / 1000 }})),
-      backgroundColor: '#60a5fa80', pointRadius: 5 }}]
-  }}, options: {{ scales: {{
-    x: {{ title: {{ display: true, text: 'Prompt Tokens' }} }},
-    y: {{ title: {{ display: true, text: 'Dauer (s)' }} }} }} }} }});
+  const byModel = {{}};
+  for (let i = 0; i < PROMPT.ts.length; i++) {{
+    const m = PROMPT.model[i] || 'unbekannt';
+    (byModel[m] = byModel[m] || []).push({{
+      x: PROMPT.tokens[i],
+      y: PROMPT.duration[i] / 1000,
+      ts: PROMPT.ts[i]
+    }});
+  }}
+  const promptDatasets = Object.entries(byModel).map(([m, pts]) => ({{
+    label: m,
+    data: pts,
+    backgroundColor: colorForModel(m) + 'b3',
+    pointRadius: 4
+  }}));
+  new Chart('promptChart', {{ type: 'scatter', data: {{ datasets: promptDatasets }},
+    options: {{
+      scales: {{
+        x: {{ title: {{ display: true, text: 'Prompt Tokens' }}, beginAtZero: true }},
+        y: {{ title: {{ display: true, text: 'Dauer (s)' }}, beginAtZero: true }}
+      }},
+      plugins: {{
+        legend: {{ position: 'bottom' }},
+        tooltip: {{
+          callbacks: {{
+            label(ctx) {{
+              const p = ctx.raw;
+              return `${{ctx.dataset.label}}: ${{p.x}} tok / ${{p.y.toFixed(2)}}s @ ${{p.ts}}`;
+            }}
+          }}
+        }}
+      }}
+    }} }});
 }}
 </script>
 </body>

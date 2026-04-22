@@ -29,6 +29,7 @@ def load_config():
 
     cfg["db_path"] = resolve(cfg["db_path"])
     cfg["stalls_dir"] = resolve(cfg["stalls_dir"])
+    cfg["ollama"]["compose_file"] = str(resolve(cfg["ollama"]["compose_file"]))
     return cfg
 
 

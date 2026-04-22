@@ -219,8 +219,26 @@ def classify_mode(conn):
     return ("A" if max_util > MODE_A_UTIL_THRESHOLD else "B"), max_util
 
 
+def close_orphan_events(conn):
+    """On detector startup, any stall_event with end_ts IS NULL is from a
+    previous instance that was killed mid-event. We can't tell post-hoc
+    whether the hang actually ended, so we close them with a marker note.
+    Prevents double-tracking the same hang across restarts (caught by
+    ti-10 client correlation: parallel #88 + #89 for same hang)."""
+    cur = conn.execute(
+        "UPDATE stall_events SET end_ts = ?, "
+        "notes = COALESCE(notes || ' | ', '') || 'auto-closed on detector restart' "
+        "WHERE end_ts IS NULL",
+        (now_iso(),)
+    )
+    if cur.rowcount > 0:
+        print(f"stall_detect: closed {cur.rowcount} orphan event(s) "
+              f"from previous instance(s)", file=sys.stderr)
+
+
 def main():
     conn = connect()
+    close_orphan_events(conn)
 
     strict_count = defaultdict(int)
     loose_window = defaultdict(lambda: deque(maxlen=LOOSE_WINDOW))
