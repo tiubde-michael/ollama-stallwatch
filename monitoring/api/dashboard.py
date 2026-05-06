@@ -14,7 +14,7 @@ OUT_PATH = Path(__file__).parent / "dashboard.html"
 # Sane caps for the prompt-vs-duration scatter to drop garbage outliers
 # (we used to have a parse_duration bug that produced 60M-second values).
 MAX_DURATION_SEC = 600     # 10 min cap; longer = filtered as suspect
-MAX_PROMPT_TOKENS = 50000  # most legitimate prompts fit in this
+MAX_PROMPT_TOKENS = 300_000  # outlier filter: >300k tokens is well past any current Ollama model
 
 
 def query_gpu_timeseries(conn, since):

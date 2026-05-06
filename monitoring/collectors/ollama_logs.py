@@ -22,7 +22,11 @@ RUNNER_PATTERN = re.compile(
     r'msg="(?:finished setting up|context for request finished)"\s+'
     r'runner\.name=registry\.ollama\.ai/(?:library/)?([^\s]+)'
 )
-COMPLETION_PATTERN = re.compile(r'msg="completion request".*?prompt=(\d+)')
+# Token-count source: 'loading cache slot' emits prompt=N in *tokens*
+# (cache.go in Ollama). The earlier 'completion request' line also has
+# prompt=N, but there it is len(req.Prompt) — bytes/chars, not tokens
+# (~3-4x the token count for typical text). Use cache.go for charts.
+PROMPT_TOKENS_PATTERN = re.compile(r'msg="loading cache slot".*?prompt=(\d+)')
 
 
 def parse_duration(dur_str):
@@ -108,9 +112,9 @@ def main():
                     last_request_rowid = None
                 continue
 
-            comp_match = COMPLETION_PATTERN.search(line)
-            if comp_match:
-                current_prompt_tokens = int(comp_match.group(1))
+            tok_match = PROMPT_TOKENS_PATTERN.search(line)
+            if tok_match:
+                current_prompt_tokens = int(tok_match.group(1))
                 continue
 
             gin_match = GIN_PATTERN.search(line)
