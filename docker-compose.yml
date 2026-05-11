@@ -2,7 +2,8 @@ services:
   ollama:
     # Pinned image version (not :latest) for controlled updates.
     # Image-Version gepinnt (nicht :latest), fuer kontrollierte Updates.
-    image: ollama/ollama:0.17.6
+    # bis 11-Mai-206 Abstimmung s. Slack 9-Mai 10:09
+    image: ollama/ollama:0.19.0
 
     container_name: ollama
     restart: unless-stopped
@@ -30,6 +31,7 @@ services:
       # 1 slot per model saves ~4-8 GB KV-cache; 2 loaded models = chat + embedding for RAG.
       # 1 Slot pro Modell spart ~4-8 GB KV-Cache; 2 Modelle = Chat + Embedding fuer RAG.
       OLLAMA_NUM_PARALLEL: "1"
+      # OLLAMA_NUM_PARALLEL: "3"
       OLLAMA_MAX_LOADED_MODELS: "2"
       # Queue depth: requests wait instead of forcing model unload (default 512).
       # Warteschlange: Requests warten statt Modelle zu entladen (Default 512).
