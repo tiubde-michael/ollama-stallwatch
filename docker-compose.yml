@@ -28,10 +28,9 @@ services:
 
     environment:
       # ── Scheduling & Queuing ──
-      # 1 slot per model saves ~4-8 GB KV-cache; 2 loaded models = chat + embedding for RAG.
-      # 1 Slot pro Modell spart ~4-8 GB KV-Cache; 2 Modelle = Chat + Embedding fuer RAG.
-      OLLAMA_NUM_PARALLEL: "1"
-      # OLLAMA_NUM_PARALLEL: "3"
+      # 2 parallel slots for concurrent request batching; MoE benefits from parallelism.
+      # 2 parallele Slots fuer Request-Batching; MoE profitiert von Parallelitaet.
+      OLLAMA_NUM_PARALLEL: "2"
       OLLAMA_MAX_LOADED_MODELS: "2"
       # Queue depth: requests wait instead of forcing model unload (default 512).
       # Warteschlange: Requests warten statt Modelle zu entladen (Default 512).
@@ -46,9 +45,9 @@ services:
       OLLAMA_DEBUG: "1"
 
       # ── Context & memory ──
-      # Long-context test (256k); revert to 32768 if VRAM-tight.
-      # Long-Context-Test (256k); auf 32768 zurueck wenn VRAM knapp.
-      OLLAMA_CONTEXT_LENGTH: "262144"
+      # 128k context matches DIWA split-pool spec (giants >128k routed to GX-10).
+      # 128k Kontext = DIWA-Split-Pool-Spec (Giganten >128k gehen auf GX-10).
+      OLLAMA_CONTEXT_LENGTH: "131072"
       # Flash Attention reduces KV-cache VRAM by ~30-50%.
       # Flash Attention reduziert KV-Cache VRAM um ~30-50%.
       OLLAMA_FLASH_ATTENTION: "1"
