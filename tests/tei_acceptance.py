@@ -19,8 +19,8 @@ import urllib.request
 GX10_EMBED = "http://192.168.5.185:8001/v1/embeddings"
 GX10_RERANK = "http://192.168.5.185:8082/v1/rerank"
 TI30_EMBED = "http://localhost:8001/v1/embeddings"
-# TEI-native (kein OpenAI-Wrapper wie GX-10) — API-Delta wird im Testbericht dokumentiert.
-TI30_RERANK = "http://localhost:8082/rerank"
+# rerank-adapter davor spricht dasselbe /v1/rerank-Format wie GX-10.
+TI30_RERANK = "http://localhost:8082/v1/rerank"
 
 SAMPLES = [
     "Patient came in with chest pain and shortness of breath.",
@@ -74,14 +74,8 @@ def embed_one(url: str, text: str) -> tuple[list[float], float]:
 
 
 def rerank(url: str, query: str, docs: list[str]) -> tuple[list[dict], float]:
-    """Normalisiert TEI-native (score/texts) und GX-10 (relevance_score/documents) auf dasselbe Format."""
+    """GX-10 und TI-30 (via rerank-adapter) sprechen dasselbe /v1/rerank-Format."""
     t0 = time.perf_counter()
-    if url.endswith("/rerank") and "/v1/" not in url:
-        # TEI-native: texts, raw_scores=true (kritisch fuer GX-10-Skala), Response = [{index, score}, ...]
-        r = post_json(url, {"query": query, "texts": docs, "raw_scores": True})
-        dt = time.perf_counter() - t0
-        return [{"index": x["index"], "relevance_score": x["score"]} for x in r], dt
-    # GX-10 OpenAI-Wrapper: documents, Response = {results: [{index, relevance_score}]}
     r = post_json(url, {"model": "bge-reranker-v2-m3", "query": query, "documents": docs})
     dt = time.perf_counter() - t0
     return r["results"], dt

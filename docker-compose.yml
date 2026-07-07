@@ -104,15 +104,18 @@ services:
           memory: 10G
 
   tei-rerank:
-    # CPU-only reranker (bge-reranker-v2-m3). TEI default = raw logits (matches GX-10 spec).
-    # CPU-only Reranker — TEI-Default sind rohe Logits (matcht GX-10-Score-Skala).
+    # CPU-only reranker (bge-reranker-v2-m3). Internal-only — the rerank-adapter service in front of this
+    # exposes the GX-10-compatible /v1/rerank shape on host port 8082. TEI raw_scores per-request.
+    # CPU-only Reranker — nur intern erreichbar; der rerank-adapter davor spricht das GX-10-Format.
     image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
     container_name: tei-rerank
     restart: unless-stopped
     networks: [openllm-net]
 
-    ports:
-      - "${BIND_IP}:8082:80"
+    # No host port — reached via rerank-adapter over openllm-net.
+    # Kein Host-Port — Zugriff nur ueber rerank-adapter im openllm-net.
+    expose:
+      - "80"
 
     volumes:
       - ${DATA_ROOT}/tei-rerank:/data
@@ -131,7 +134,38 @@ services:
       resources:
         limits:
           cpus: "3"
-          memory: 6G
+          memory: 10G
+
+  rerank-adapter:
+    # Thin Python-stdlib HTTP-Adapter: OpenAI /v1/rerank (documents/relevance_score) -> TEI /rerank
+    # (texts/score, raw_scores:true). Makes TI-30 drop-in compatible with GX-10 for the Coordinator.
+    # Duenner Adapter, damit Coordinator TI-30 wie GX-10 auf /v1/rerank ansprechen kann.
+    image: python:3.12-slim
+    container_name: rerank-adapter
+    restart: unless-stopped
+    networks: [openllm-net]
+    depends_on:
+      - tei-rerank
+
+    ports:
+      - "${BIND_IP}:8082:80"
+
+    volumes:
+      - ./rerank-adapter:/app:ro
+
+    environment:
+      TEI_URL: "http://tei-rerank/rerank"
+      TEI_HEALTH: "http://tei-rerank/health"
+      MODEL_NAME: "bge-reranker-v2-m3"
+      PORT: "80"
+
+    command: ["python3", "/app/adapter.py"]
+
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 256M
 
   openwebui:
     # Pinned image version (not :latest) for controlled updates.
