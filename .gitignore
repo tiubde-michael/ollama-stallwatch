@@ -4,6 +4,11 @@ ollama/
 # Open WebUI data (DB, uploads, cache, vector_db)
 openwebui/
 
+# TEI CPU-Backup model caches (HF hub cache, several GB each).
+# TEI CPU-Backup Modell-Caches (HF-Hub-Cache).
+tei-embed/
+tei-rerank/
+
 # Monitoring SQLite DB (wird live generiert, nicht versioniert)
 monitoring/monitor.db
 monitoring/monitor.db-wal

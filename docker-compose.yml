@@ -69,6 +69,70 @@ services:
       timeout: 5s
       retries: 5
 
+  tei-embed:
+    # CPU-only Text-Embeddings-Inference (bge-m3) as failover for the GX-10 :8001 endpoint.
+    # Same host port 8001 as GX-10 for drop-in compatibility — Coordinator registers TI-30 as backup rank.
+    # CPU-only bge-m3-Embedding als Backup fuer GX-10 :8001. Gleicher Host-Port fuer Drop-in-Kompatibilitaet.
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+    container_name: tei-embed
+    restart: unless-stopped
+    networks: [openllm-net]
+
+    ports:
+      - "${BIND_IP}:8001:80"
+
+    volumes:
+      - ${DATA_ROOT}/tei-embed:/data
+
+    environment:
+      HUGGINGFACE_HUB_CACHE: "/data"
+      HF_HOME: "/data"
+
+    command:
+      - --model-id=BAAI/bge-m3
+      - --max-batch-tokens=8192
+      - --max-client-batch-size=32
+      - --auto-truncate
+
+    # CPU/RAM caps: leave headroom for ollama (2 cores active) + system.
+    # 10 GB memory (2 GB weights + warmup peak, TEI reports ~5 GB steady after warmup).
+    # CPU/RAM-Caps: Platz fuer ollama (aktuell 2 Cores) + Rest-System.
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 10G
+
+  tei-rerank:
+    # CPU-only reranker (bge-reranker-v2-m3). TEI default = raw logits (matches GX-10 spec).
+    # CPU-only Reranker — TEI-Default sind rohe Logits (matcht GX-10-Score-Skala).
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+    container_name: tei-rerank
+    restart: unless-stopped
+    networks: [openllm-net]
+
+    ports:
+      - "${BIND_IP}:8082:80"
+
+    volumes:
+      - ${DATA_ROOT}/tei-rerank:/data
+
+    environment:
+      HUGGINGFACE_HUB_CACHE: "/data"
+      HF_HOME: "/data"
+
+    command:
+      - --model-id=BAAI/bge-reranker-v2-m3
+      - --max-batch-tokens=8192
+      - --max-client-batch-size=32
+      - --auto-truncate
+
+    deploy:
+      resources:
+        limits:
+          cpus: "3"
+          memory: 6G
+
   openwebui:
     # Pinned image version (not :latest) for controlled updates.
     # Image-Version gepinnt (nicht :latest), fuer kontrollierte Updates.

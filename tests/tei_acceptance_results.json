@@ -1,0 +1,84 @@
+{
+  "embedding": [
+    {
+      "text": "Patient came in with chest pain and shortness of breath.",
+      "dim": 1024,
+      "norm_gx": 0.9999999604831246,
+      "norm_ti": 1.0000000287273636,
+      "cosine": 0.999573022474621,
+      "dt_gx_ms": 27.39045099588111,
+      "dt_ti_ms": 51.02548998547718
+    },
+    {
+      "text": "Diagnose: akute Bronchitis, Antibiotikatherapie eingeleitet.",
+      "dim": 1024,
+      "norm_gx": 0.9999999696545075,
+      "norm_ti": 1.000000026784185,
+      "cosine": 0.999496450194089,
+      "dt_gx_ms": 35.706642986042425,
+      "dt_ti_ms": 236.36283600353636
+    },
+    {
+      "text": "COBOL Copybook PIC 9(5)V99 COMP-3 verwendet packed decimal.",
+      "dim": 1024,
+      "norm_gx": 1.0000000275634822,
+      "norm_ti": 0.9999999920031303,
+      "cosine": 0.9993975246544006,
+      "dt_gx_ms": 35.809583991067484,
+      "dt_ti_ms": 54.005755024263635
+    },
+    {
+      "text": "Der Junior-Chatbot benoetigt Kontext-Behaltung fuer Programm-Analyse.",
+      "dim": 1024,
+      "norm_gx": 1.0000000349254388,
+      "norm_ti": 0.9999999847958732,
+      "cosine": 0.9993240745178685,
+      "dt_gx_ms": 22.129268007120118,
+      "dt_ti_ms": 47.97311802394688
+    },
+    {
+      "text": "Recipe: sift flour, add butter, bake at 180 degrees for 40 minutes.",
+      "dim": 1024,
+      "norm_gx": 1.0000000375656053,
+      "norm_ti": 1.0000000554623327,
+      "cosine": 0.999446706495377,
+      "dt_gx_ms": 28.26786899822764,
+      "dt_ti_ms": 352.04510000767186
+    }
+  ],
+  "reranker": {
+    "query": "medical transcription of a patient visit",
+    "docs": [
+      "Patient came in with chest pain and shortness of breath.",
+      "Recipe: sift flour, add butter, bake at 180 degrees.",
+      "Doctor recorded vital signs and prescribed medication for the patient.",
+      "COBOL Copybook uses packed decimal encoding."
+    ],
+    "order_gx": [
+      2,
+      0,
+      3,
+      1
+    ],
+    "order_ti": [
+      2,
+      0,
+      3,
+      1
+    ],
+    "scores_gx": {
+      "2": -1.4250576496124268,
+      "0": -2.723578453063965,
+      "3": -10.422060012817383,
+      "1": -11.045331954956055
+    },
+    "scores_ti": {
+      "2": -1.5287223,
+      "0": -4.067306,
+      "3": -10.985235,
+      "1": -11.036942
+    },
+    "dt_gx_ms": 62.05902699730359,
+    "dt_ti_ms": 632.6140239834785
+  }
+}
