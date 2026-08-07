@@ -4,11 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Docker-based deployment of **Open WebUI** (v0.6.43) with **Ollama** (v0.17.6) as a local LLM inference backend. The setup is designed for a multi-GPU NVIDIA host with GPU passthrough.
+This is a Docker-based deployment of **Open WebUI** (v0.6.43) with **Ollama** (v0.19.0) as a local LLM inference backend, plus a CPU-based embedding/reranking fallback. The setup is designed for a multi-GPU NVIDIA host with GPU passthrough.
 
 - **Open WebUI**: Full-stack AI chat/RAG web application (Python/FastAPI backend + TypeScript/SvelteKit frontend)
 - **Ollama**: Local LLM inference engine with NVIDIA CUDA support
-- **Networking**: Both containers communicate over a custom Docker bridge network (`openllm-net`)
+- **tei-embed / tei-rerank**: Text Embeddings Inference on CPU (`bge-m3`, `bge-reranker-v2-m3`) — failover for GX-10
+- **rerank-adapter**: Translates OpenAI `/v1/rerank` to TEI `/rerank` so the coordinator sees one format
+- **Networking**: All containers communicate over a custom Docker bridge network (`openllm-net`)
 
 ## Common Commands
 
@@ -63,10 +65,13 @@ npm run format:backend                  # Black (backend)
 
 ```
 $DATA_ROOT/                          # default /srv/Container, set in .env
-├── docker-compose.yml               # Service orchestration (ollama + openwebui)
+├── docker-compose.yml               # Service orchestration (ollama, tei-embed, tei-rerank,
+│                                    #   rerank-adapter, openwebui)
 ├── .env                             # Bind IPs, GPU UUID, ports, project name (gitignored)
 ├── .env.example                     # Template for .env
 ├── ollama/                          # Ollama data volume (models, history) [gitignored]
+├── tei-embed/                       # TEI embedding model cache [gitignored]
+├── tei-rerank/                      # TEI reranker model cache [gitignored]
 ├── openwebui/                       # Open WebUI data volume (DB, uploads, cache, vector_db) [gitignored]
 └── monitoring/                      # Lightweight monitoring + REST API (SQLite, 30d retention)
     ├── config.toml                  # Per-host config (host_id, paths, thresholds) [gitignored]
@@ -120,13 +125,24 @@ Key environment variables (set in `.env` or `docker-compose.yml`):
 
 | Variable | Current Value | Purpose |
 |---|---|---|
-| `OLLAMA_CONTEXT_LENGTH` | 32768 | Global context window for all Ollama models |
-| `OLLAMA_NUM_PARALLEL` | 1 | Concurrent request slots per model |
+| `OLLAMA_CONTEXT_LENGTH` | 131072 | Global context window for all Ollama models (128k = DIWA split-pool spec) |
+| `OLLAMA_NUM_PARALLEL` | 2 | Concurrent request slots per model → 2 × 128k |
 | `OLLAMA_MAX_LOADED_MODELS` | 2 | Max models in VRAM simultaneously |
-| `OLLAMA_DEBUG` | 1 | Detailed request logging (model, tokens, timings) |
+| `OLLAMA_MAX_QUEUE` | 16 | Requests wait instead of forcing a model unload |
+| `OLLAMA_KEEP_ALIVE` | 10m | Unload idle models after 10 min |
+| `OLLAMA_DEBUG` | 1 | Detailed request logging (model, tokens, timings) — the monitoring log parser depends on it |
+| `OLLAMA_FLASH_ATTENTION` | 1 | Reduces KV-cache VRAM by ~30-50% |
 | `OLLAMA_GPU_OVERHEAD` | 2147483648 | 2 GiB VRAM reserved for system/driver overhead |
 | `OPENWEBUI_PORT` | 3000 | External port mapped to container's 8080 |
 | `OLLAMA_BASE_URL` | http://ollama:11434 | Internal Docker network URL for Ollama |
+
+**Context limit: Ollama truncates silently.** Prompts beyond `OLLAMA_CONTEXT_LENGTH` do not
+produce an error — the server drops the front of the prompt, answers HTTP 200, and bills exactly
+131072 prompt tokens. Measured 2026-08-07 across 110%/150%/300% of the slot size, 9 of 9 runs
+(eval-gate P6, protocol in `Claude-Austausch/01_Agenten-Studio/eval-gate/messungen/`). Any client
+that needs a hard failure must check the context itself — including tool schemas, which the
+token count does not cover. The same applies one level down: both TEI containers run with
+`--auto-truncate`. Telltale sign in the monitoring DB: `prompt_tokens` stuck at exactly the slot size.
 
 ## Monitoring
 
