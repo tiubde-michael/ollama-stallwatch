@@ -131,7 +131,23 @@ def main():
                 if endpoint in ("/", "/api/ps", "/api/version", "/api/tags"):
                     continue
 
-                is_inference = endpoint in ("/api/chat", "/api/generate")
+                # /v1/* is the OpenAI-compatible path — that is what agentic
+                # clients (Claude/Codex CLI, eval-gate) use. Without it their
+                # requests land with model=NULL and stay invisible in the
+                # per-model latency series. The runner/cache DEBUG lines that
+                # carry model and prompt tokens are scheduler-level and fire
+                # for /v1 exactly as they do for /api.
+                is_inference = endpoint in ("/api/chat", "/api/generate",
+                                            "/v1/chat/completions", "/v1/completions")
+
+                # Real inference cannot complete in <50ms — even a single-token
+                # decode is many ms. Sub-50ms inference calls are keep-alive /
+                # probe / stream-closer calls and would otherwise consume the
+                # cached prompt_tokens slot intended for the next real request.
+                # Drop them entirely.
+                if is_inference and duration_ms < 50:
+                    continue
+
                 model = current_model if is_inference else None
                 prompt_tokens = current_prompt_tokens if is_inference else None
 
