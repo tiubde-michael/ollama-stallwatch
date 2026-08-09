@@ -126,7 +126,7 @@ Key environment variables (set in `.env` or `docker-compose.yml`):
 | Variable | Current Value | Purpose |
 |---|---|---|
 | `OLLAMA_CONTEXT_LENGTH` | 131072 | Global context window for all Ollama models (128k = DIWA split-pool spec) |
-| `OLLAMA_NUM_PARALLEL` | 2 | Concurrent request slots per model → 2 × 128k |
+| `OLLAMA_NUM_PARALLEL` | 2 | Requested slots per model. **Not always honoured** — see below |
 | `OLLAMA_MAX_LOADED_MODELS` | 2 | Max models in VRAM simultaneously |
 | `OLLAMA_MAX_QUEUE` | 16 | Requests wait instead of forcing a model unload |
 | `OLLAMA_KEEP_ALIVE` | 10m | Unload idle models after 10 min |
@@ -135,6 +135,15 @@ Key environment variables (set in `.env` or `docker-compose.yml`):
 | `OLLAMA_GPU_OVERHEAD` | 2147483648 | 2 GiB VRAM reserved for system/driver overhead |
 | `OPENWEBUI_PORT` | 3000 | External port mapped to container's 8080 |
 | `OLLAMA_BASE_URL` | http://ollama:11434 | Internal Docker network URL for Ollama |
+
+**Parallel slots: measured, not configured.** `OLLAMA_NUM_PARALLEL=2` is a request, not a
+guarantee. Ollama silently drops to 1 slot when the model plus its KV cache would not fit — no
+error, no warning-level log, only `runner.parallel=1` at DEBUG. Measured 2026-08-09 on this host:
+`qwen3.6:35b-a3b-q4_K_M` (31.4 GB) gets **1** slot, `alibayram/medgemma:27b` (16 GB) gets **2**.
+Test it, do not read it: fire two concurrent requests against a warm model and compare aggregate
+throughput to a single stream — identical throughput plus one request waiting the other out means
+one slot. Related: the two models do not fit in VRAM together (31.4 + 16 GB > 40 GB usable), so
+loading one evicts the other; a cold load costs ~92 s.
 
 **Context limit: Ollama truncates silently.** Prompts beyond `OLLAMA_CONTEXT_LENGTH` do not
 produce an error — the server drops the front of the prompt, answers HTTP 200, and bills exactly
