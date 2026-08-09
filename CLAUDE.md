@@ -37,6 +37,26 @@ docker exec ollama ollama rm <model>    # Remove a model
 docker exec ollama ollama ps            # Show running models (VRAM usage)
 ```
 
+### Operational Checks (`tests/`)
+
+```bash
+python3 tests/stack_check.py            # is the machine fit for the day? 24 checks, ~1 min
+python3 tests/stack_check.py --schnell  # same without inference (triggers no model load)
+
+# "Same question, same answer?" — the thing the eval-gate does NOT cover.
+python3 tests/clinical_baseline.py --rauschboden   # is the set reproducible at all?
+python3 tests/clinical_baseline.py --anlegen       # write the reference
+python3 tests/clinical_baseline.py --vergleichen   # check against it after any change
+
+python3 tests/tei_acceptance.py         # embeddings/reranker vs. the GX-10 reference
+```
+
+**Run `clinical_baseline.py --vergleichen` after every change to engine, model tag or context
+length.** Those change answers without failing, so nothing else catches them. The prompt order is
+part of the reference: the model is deterministic, but the answer depends on the slot's prefix
+cache — the same prompt repeated back-to-back reproducibly yields a *different* answer than the
+same prompt asked once. Do not re-run single entries in isolation.
+
 ### Inside the Open WebUI Container
 
 ```bash
