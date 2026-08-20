@@ -112,6 +112,65 @@ def init_schema(conn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_stall_start ON stall_events(start_ts)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_stall_end ON stall_events(end_ts)")
 
+    # Downsampled metrics (see STANDARD.md "Gestufte Aufbewahrung").
+    # One row per (bucket start, bucket width, series key). AVG *and* MAX are
+    # both kept on purpose: averages hide the peaks, and the peaks are what
+    # answer operational questions — the proof that Ollama splits a model
+    # across both GPUs rests on MAX(vram_used_mib), not on the mean.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS gpu_metrics_rollup (
+            bucket_ts   TEXT NOT NULL,
+            bucket_sec  INTEGER NOT NULL,
+            gpu_id      INTEGER NOT NULL,
+            gpu_name    TEXT NOT NULL,
+            samples     INTEGER NOT NULL,
+            vram_used_mib_avg  REAL NOT NULL,
+            vram_used_mib_max  INTEGER NOT NULL,
+            vram_total_mib     INTEGER NOT NULL,
+            utilization_gpu_avg REAL NOT NULL,
+            utilization_gpu_max INTEGER NOT NULL,
+            temperature_max     INTEGER NOT NULL,
+            power_draw_w_avg    REAL NOT NULL,
+            power_draw_w_max    REAL NOT NULL,
+            PRIMARY KEY (bucket_ts, bucket_sec, gpu_id)
+        ) WITHOUT ROWID
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_gpu_roll_ts ON gpu_metrics_rollup(bucket_sec, bucket_ts)")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS system_metrics_rollup (
+            bucket_ts   TEXT NOT NULL,
+            bucket_sec  INTEGER NOT NULL,
+            proc_role   TEXT NOT NULL,
+            samples     INTEGER NOT NULL,
+            cpu_percent_avg REAL NOT NULL,
+            cpu_percent_max REAL NOT NULL,
+            rss_mib_avg     REAL NOT NULL,
+            rss_mib_max     INTEGER NOT NULL,
+            num_threads_max INTEGER NOT NULL,
+            host_load1_avg  REAL,
+            host_load1_max  REAL,
+            host_mem_used_mib_max INTEGER,
+            PRIMARY KEY (bucket_ts, bucket_sec, proc_role)
+        ) WITHOUT ROWID
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sys_roll_ts ON system_metrics_rollup(bucket_sec, bucket_ts)")
+
+    # Every maintenance run writes one row here. This is what turns
+    # "did retention actually run?" from a guess into a query — the previous
+    # cron-based retention never ran once and nothing anywhere said so.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS maintenance_log (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts         TEXT NOT NULL,
+            job        TEXT NOT NULL,
+            ok         INTEGER NOT NULL,
+            duration_s REAL,
+            details    TEXT          -- JSON: rolled/deleted rows per table
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_maint_ts ON maintenance_log(job, ts)")
+
     # Migration: add columns introduced after initial deploy
     cols = {r[1] for r in conn.execute("PRAGMA table_info(stall_events)").fetchall()}
     if "confidence" not in cols:

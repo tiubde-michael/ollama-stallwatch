@@ -22,12 +22,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 
 COMPOSE = "/srv/Container/docker-compose.yml"
 REPO = "/srv/Container"
@@ -189,6 +193,82 @@ def check_monitoring() -> None:
         pruefe("Request-Log wird geschrieben", False, False, f"{type(e).__name__}: {e}")
 
 
+def check_aufraeumen() -> None:
+    """Läuft die Aufräumung wirklich — und liefert `docker logs` noch Aktuelles?
+
+    Beide Prüfungen gibt es, weil beide Fehler am 20.08.2026 gefunden wurden und
+    beide dieselbe Signatur haben: **im Erfolgsfall sehen sie aus wie im
+    Fehlerfall.** Die Cron-Retention lief 146 Tage lang nie, während der Dienst
+    „aktiv" meldete; `docker logs` lieferte plausible Zeilen, die nur sechs
+    Wochen alt waren. Ohne diese zwei Zeilen fällt so etwas erst auf, wenn man
+    die Daten braucht — also im Störungsfall.
+    """
+    print("\nAufräumen und Logs")
+
+    # 1) Retention: der letzte Lauf muss jünger als 25 h sein (Timer läuft täglich).
+    db = os.path.join(REPO, "monitoring", "monitor.db")
+    if not os.path.exists(db):
+        pruefe("Retention lief in den letzten 25 h", False, False, "monitor.db fehlt")
+    else:
+        try:
+            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            row = conn.execute(
+                "SELECT ts, ok FROM maintenance_log WHERE job='retention' "
+                "ORDER BY ts DESC LIMIT 1").fetchone()
+            conn.close()
+            if row is None:
+                pruefe("Retention lief in den letzten 25 h", False, False,
+                       "kein Lauf verzeichnet — Timer aktiv? "
+                       "systemctl list-timers ollama-monitor-retention")
+            else:
+                ts, ok = row
+                alter_h = (datetime.now(timezone.utc)
+                           - datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ")
+                           .replace(tzinfo=timezone.utc)).total_seconds() / 3600
+                pruefe("Retention lief in den letzten 25 h", False,
+                       alter_h < 25 and ok == 1,
+                       f"letzter Lauf {ts} (vor {alter_h:.1f} h), ok={ok}")
+        except Exception as e:  # noqa: BLE001
+            pruefe("Retention lief in den letzten 25 h", False, False,
+                   f"{type(e).__name__}: {e}")
+
+    # 2) docker logs: liefert der Leser noch frische Zeilen?
+    # Ein NUL-Block in der json.log (unsauberer Abbruch) lässt den Docker-Leser
+    # genau dort stehenbleiben — die Rohdatei wächst weiter, `docker logs` bleibt
+    # aber für immer in der Vergangenheit. Auf ti-30 lag das Loch bei 0,9 % der
+    # Datei, damit waren 99 % des Logs unerreichbar.
+    if shutil.which("docker") is None:
+        return
+    rc, out = sh("docker", "logs", "--tail", "1", "ollama", timeout=60)
+    # Format der Ollama-Zeilen: "[GIN] 2026/08/20 - 10:52:49 | …" — zwischen
+    # Datum und Uhrzeit steht " - ", nicht nur "T" oder ein Leerzeichen.
+    treffer = re.search(
+        r"(\d{4})[-/](\d{2})[-/](\d{2})(?:T|\s+-\s+|\s+)(\d{2}):(\d{2}):(\d{2})", out)
+    if not treffer:
+        pruefe("Container-Log wird geschrieben", False, False,
+               "keine Zeitmarke in der letzten Zeile")
+        return
+    j, mo, t, st, mi, s = (int(x) for x in treffer.groups())
+    letzte = datetime(j, mo, t, st, mi, s, tzinfo=timezone.utc)
+    alter_h = (datetime.now(timezone.utc) - letzte).total_seconds() / 3600
+    frisch = pruefe("Container-Log wird geschrieben", False, alter_h < 24,
+                    f"jüngste Zeile {letzte:%Y-%m-%d %H:%M:%S} (vor {alter_h:.1f} h)")
+
+    # Entscheidend: `--tail` springet ans DATEIENDE und läuft am Nullloch vorbei,
+    # `--since` liest von vorn und bleibt darin stehen. Frische letzte Zeile bei
+    # gleichzeitig leerem --since ist deshalb der Nachweis eines kaputten
+    # Vorwärtslesers — genau der Zustand, in dem `docker logs` im Störungsfall
+    # nichts mehr hergibt, ohne das je zu melden. Gemessen ti-30/ti11 20.08.2026.
+    if not frisch:
+        return
+    rc, out2 = sh("docker", "logs", "--since", "10m", "ollama", timeout=180)
+    zeilen = len([z for z in out2.splitlines() if z.strip()])
+    pruefe("docker logs von vorn lesbar", False, zeilen > 0,
+           f"--since 10m liefert {zeilen} Zeilen"
+           + ("" if zeilen else " trotz frischer letzter Zeile — NUL-Block in der "
+                               "json.log, siehe monitoring/STANDARD.md"))
+
+
 def check_platte() -> None:
     print("\nSystem")
     rc, out = sh("df", "--output=pcent,avail", "-h", REPO)
@@ -209,6 +289,7 @@ def main() -> int:
     check_konfig()
     check_ollama(a.schnell)
     check_monitoring()
+    check_aufraeumen()
     check_platte()
 
     hart = [e for e in ERG if e["hart"] and not e["ok"]]

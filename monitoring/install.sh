@@ -100,23 +100,52 @@ for u in "${UNITS[@]}"; do
   echo "  enabled+restarted $u"
 done
 
-# Retention cron — extend to clean stalls/ dir too
-cat > /etc/cron.d/ollama-monitor-retention <<'EOF'
-# Monitoring data retention (30 days). Removes old DB rows + stack dumps.
-0 3 * * * root /usr/bin/python3 -c "
-import sqlite3, pathlib, time
-conn = sqlite3.connect('/srv/Container/monitoring/monitor.db')
-for t in ('gpu_metrics', 'ollama_requests', 'system_metrics'):
-    conn.execute(f\"DELETE FROM {t} WHERE timestamp < datetime('now', '-30 days')\")
-conn.execute(\"DELETE FROM stall_events WHERE start_ts < datetime('now', '-30 days')\")
-conn.execute('VACUUM'); conn.close()
-cutoff = time.time() - 30*86400
-for p in pathlib.Path('/srv/Container/monitoring/stalls').glob('*.txt'):
-    if p.stat().st_mtime < cutoff: p.unlink()
-" >> /var/log/ollama-monitor-retention.log 2>&1
+# Tiered retention — systemd timer, NOT cron.
+#
+# The previous version of this block wrote a MULTI-LINE command into
+# /etc/cron.d. The crontab format has no line continuation: every line is its
+# own entry, so the job was never handed to a shell and never ran once — on
+# ti-30 that went unnoticed for 146 days. It was provable after the fact
+# because the command's `>> …log` redirect would have created the log file even
+# if the command itself had failed, and that file never existed.
+#
+# Two consequences, both deliberate:
+#   1. the work lives in retention.py and the unit just calls it, so nothing
+#      depends on quoting survivng a crontab parser;
+#   2. every run writes a row into maintenance_log, and stack_check.py fails
+#      if the newest row is older than 25 h. A job that stops running now says so.
+rm -f /etc/cron.d/ollama-monitor-retention
+
+cat > /etc/systemd/system/ollama-monitor-retention.service <<EOF
+[Unit]
+Description=Ollama monitoring: tiered retention (downsample + prune)
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=$PY $ROOT/retention.py
+WorkingDirectory=$ROOT
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ollama-monitor-retention
 EOF
-chmod 644 /etc/cron.d/ollama-monitor-retention
-echo "  retention cron installed"
+
+cat > /etc/systemd/system/ollama-monitor-retention.timer <<'EOF'
+[Unit]
+Description=Ollama monitoring: run tiered retention daily
+
+[Timer]
+OnCalendar=*-*-* 03:17:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now ollama-monitor-retention.timer >/dev/null 2>&1
+echo "  retention timer installed (systemd, daily 03:17)"
 
 mkdir -p "$ROOT/stalls"
 chmod 755 "$ROOT/stalls"

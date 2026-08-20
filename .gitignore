@@ -37,3 +37,9 @@ monitoring/**/__pycache__/
 
 # Claude Code Session-Daten
 .claude/
+
+# Monitoring-Sicherungen (koennen hunderte MB gross sein — nie ins Repo)
+monitoring/backup/
+
+# Lokale Sicherungen vor Eingriffen (bleiben auf der Maschine)
+*.bak-20*

@@ -1,5 +1,25 @@
+# Log rotation, fleet standard — 25 MB x 4 files = 100 MB cap per container.
+# See monitoring/STANDARD.md. Also set daemon-wide in /etc/docker/daemon.json;
+# repeated here so the intent is visible in git and travels with the stack.
+#
+# Why it matters: json-file has NO rotation by default. On ti-30 the ollama log
+# had grown to 919 MB (~61 MB/day, driven by OLLAMA_DEBUG=1 plus a 1 Hz
+# /api/ps poller), on ti11 to 868 MB. Worse, an unclean shutdown on 2026-07-05
+# left a block of NUL bytes in both files, and `docker logs` stops dead at it —
+# 99% of ti-30's log was unreachable while the file kept growing. A rotated log
+# ages that damage out instead of carrying it forever.
+#
+# Log-Rotation, Flotten-Standard — 25 MB x 4 Dateien = 100 MB Deckel je Container.
+# Greift erst beim NEUERZEUGEN eines Containers, nicht beim Neustart.
+x-logging: &logdefaults
+  driver: json-file
+  options:
+    max-size: "25m"
+    max-file: "4"
+
 services:
   ollama:
+    logging: *logdefaults
     # Pinned image version (not :latest) for controlled updates.
     # Image-Version gepinnt (nicht :latest), fuer kontrollierte Updates.
     # bis 11-Mai-206 Abstimmung s. Slack 9-Mai 10:09
@@ -70,6 +90,7 @@ services:
       retries: 5
 
   tei-embed:
+    logging: *logdefaults
     # CPU-only Text-Embeddings-Inference (bge-m3) as failover for the GX-10 :8001 endpoint.
     # Same host port 8001 as GX-10 for drop-in compatibility — Coordinator registers TI-30 as backup rank.
     # CPU-only bge-m3-Embedding als Backup fuer GX-10 :8001. Gleicher Host-Port fuer Drop-in-Kompatibilitaet.
@@ -104,6 +125,7 @@ services:
           memory: 10G
 
   tei-rerank:
+    logging: *logdefaults
     # CPU-only reranker (bge-reranker-v2-m3). Internal-only — the rerank-adapter service in front of this
     # exposes the GX-10-compatible /v1/rerank shape on host port 8082. TEI raw_scores per-request.
     # CPU-only Reranker — nur intern erreichbar; der rerank-adapter davor spricht das GX-10-Format.
@@ -137,6 +159,7 @@ services:
           memory: 10G
 
   rerank-adapter:
+    logging: *logdefaults
     # Thin Python-stdlib HTTP-Adapter: OpenAI /v1/rerank (documents/relevance_score) -> TEI /rerank
     # (texts/score, raw_scores:true). Makes TI-30 drop-in compatible with GX-10 for the Coordinator.
     # Duenner Adapter, damit Coordinator TI-30 wie GX-10 auf /v1/rerank ansprechen kann.
@@ -168,6 +191,7 @@ services:
           memory: 256M
 
   openwebui:
+    logging: *logdefaults
     # Pinned image version (not :latest) for controlled updates.
     # Image-Version gepinnt (nicht :latest), fuer kontrollierte Updates.
     image: ghcr.io/open-webui/open-webui:v0.6.43

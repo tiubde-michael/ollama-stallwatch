@@ -243,8 +243,24 @@ Stall mode (orthogonal to confidence):
 - **Log Parser**: Folgt `docker compose logs ollama`, extrahiert Modell, Prompt-Tokens, Dauer, Client-IP. Erkennt sowohl offizielle Modelle (`library/`) als auch Community-Modelle (z.B. `alibayram/medgemma`).
 - **Process Logger**: liest `/proc/<host_pid>/{stat,status}` fuer ollama serve + runner alle 10s; berechnet CPU% als Delta ueber Intervall. Heartbeat-Write alle 60s auch ohne Delta. Negative CPU% (PID-reuse) werden auf 0 geclampt.
 - **Stall Detector**: alle 5s; drei parallele Kriterien (strict/loose/ghost) — siehe REST-API-Section oben. Bei Open: gleichzeitig `mode` (A/B basierend auf MAX(util) der letzten 60s) und `client_ip` (most-recent /api/generate Request der letzten 5min) erfasst. Stack-Dump (Threads, /proc kernel-stacks via sudo, gdb backtrace) nach `monitoring/stalls/<ts>_pid<N>.txt`. Sudoers in `/etc/sudoers.d/ollama-monitor`. Bei Detector-Restart werden orphan-Events automatisch geschlossen.
-- **Retention**: Cron deletes DB rows + stack files older than 30 days (`/etc/cron.d/ollama-monitor-retention`).
-- **DB**: `monitoring/monitor.db` (SQLite WAL mode).
+- **Retention**: tiered — raw for 24 h, 5 s buckets for 7 days, 60 s buckets for 360 days.
+  Run by `monitoring/retention.py` via the systemd timer `ollama-monitor-retention.timer`
+  (daily 03:17). Sampled series are downsampled keeping **avg and max**; `ollama_requests`
+  and `stall_events` are never downsampled, only deleted after 360 days.
+  **The predecessor was a cron job that never ran once** — a multi-line command in
+  `/etc/cron.d`, which the crontab format does not support. It went unnoticed for 146 days.
+  Every run now writes to `maintenance_log`, and `tests/stack_check.py` fails if the last
+  one is older than 25 h. Full rules in `monitoring/STANDARD.md`.
+- **Container logs**: `json-file` does not rotate by default. Fleet standard is
+  `max-size 25m` × `max-file 4` = 100 MB per container, set in both `/etc/docker/daemon.json`
+  and `docker-compose.yml`. Takes effect only when a container is **recreated**.
+  Beware: a NUL block from an unclean shutdown (2026-07-05 on ti-30 and ti11) makes
+  `docker logs` stop dead at that offset while the file keeps growing — `--tail` still works,
+  `--since` returns nothing. See `monitoring/STANDARD.md` §1a.
+- **DB**: `monitoring/monitor.db` (SQLite WAL mode). Never compare timestamps against
+  `datetime('now', …)` in SQL — the stored format uses `T`/`Z`, `datetime()` uses a space,
+  and text comparison then makes every row of the current day "newer" than any cutoff of
+  that day. Use `strftime('%Y-%m-%dT%H:%M:%SZ', 'now', …)`.
 - **Dashboard**: Chart.js, wird bei jedem Seitenaufruf live aus SQLite generiert; rote Banderolen markieren Stall-Fenster auf GPU+CPU-Charts.
 - **Portabilitaet**: `install.sh` ist idempotent + host-detecting (skipt Services wenn `nvidia-smi`/`docker` fehlen). Auf neuem Host: rsync + `config.toml` anpassen + `sudo ./install.sh`.
 

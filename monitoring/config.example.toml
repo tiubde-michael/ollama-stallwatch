@@ -22,9 +22,18 @@ host = "0.0.0.0"
 port = 3002
 
 [gpu]
-poll_interval_sec = 10
+# 1 Hz is the fleet standard (STANDARD.md). At <=5s the collector runs ONE
+# long-lived `nvidia-smi --loop-ms` instead of spawning a process per sample —
+# per-call cost was measured at ~29 ms, which is ~3% of a core at 1 Hz.
+poll_interval_sec = 1
+heartbeat_sec = 60               # force-write at least every N sec even if no delta
 
 [process]
+# Left at 10s on purpose: cpu_percent is a delta over the interval and gets
+# noisy at 1 Hz, and /proc reads are cheap enough that nothing is gained.
+# Consequence: the 5s rollup tier is skipped for system_metrics — a bucket can
+# never be finer than the source it is built from. retention.py detects this
+# from poll_interval_sec and skips the tier by itself.
 poll_interval_sec = 10
 heartbeat_sec = 60               # force-write at least every N sec even if no delta
 
@@ -52,4 +61,15 @@ ghost_serve_cpu_max_percent = 50
 ghost_consecutive_polls = 6      # 6 * 5s = 30s of confirmed inactivity
 
 [retention]
-days = 30
+# Tiered retention — see STANDARD.md. Sampled series are DOWNSAMPLED (avg AND
+# max per bucket), event tables are never downsampled, only deleted very late.
+#
+# The old `days = 30` key is gone. It belonged to the cron job that never ran
+# on any host (multi-line command in /etc/cron.d, which crontab does not
+# support), so it never had any effect. retention.py ignores it if still
+# present rather than acting on a value nobody validated.
+raw_hours = 24                   # keep full resolution this long
+tiers = [[5, 7], [60, 360]]      # [bucket seconds, keep days] — coarser downward
+events_days = 360                # ollama_requests + stall_events: delete only
+stalls_days = 360                # stack dumps on disk
+vacuum_min_deleted = 100000      # VACUUM locks the file — only when it pays off
