@@ -52,7 +52,16 @@ ${requires_docker:+Requires=docker.service}
 Type=simple
 ExecStart=$PY $entrypoint
 WorkingDirectory=$workdir
-Restart=on-failure
+# always, NICHT on-failure. Ein Sammler, der sich sauber beendet, weil sein
+# Container gerade nicht da ist, hat Exit 0 — und on-failure holt ihn dann nie
+# zurueck. Gemessen ti-30 20.08.2026: nach dem Neustart lief der Log-Parser
+# 123 ms, meldete "container 'ollama' not present, exiting cleanly", und blieb
+# drei Stunden tot, waehrend systemd "enabled" anzeigte. In der Zeit fehlen
+# saemtliche Request-Zeilen in der Datenbank.
+# Mit RestartSec=10 versucht er es alle 10 s erneut und faengt den Container ein,
+# sobald er da ist. Die systemd-Startbremse (5 Starts je 10 s) greift dabei
+# nicht, weil zwischen zwei Versuchen 10 s liegen.
+Restart=always
 RestartSec=10
 StandardOutput=journal
 StandardError=journal

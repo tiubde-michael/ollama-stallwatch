@@ -135,6 +135,18 @@ SERIES = {
 }
 
 
+# Der Trockenlauf muss zeigen, WAS PASSIEREN WÜRDE — sonst ist er keine
+# Vorschau, sondern nur ein teurer Zeilenzähler. Die erste Fassung gab im
+# Trockenfall stur `geloescht: 0` zurück; ti11-Ops meldete das an fA-439 mit
+# `gelesen: 455430, geloescht: 0` und hielt sich zu Recht nicht daran fest,
+# sondern fuhr erst scharf gegen die Sicherungskopie. Nach unserem eigenen
+# Maßstab war das eine Prüfung, die im Erfolgsfall aussieht wie im Fehlerfall.
+#
+# Jetzt gilt: gelöscht wird genau, was gelesen wurde (alles vor dem Schnitt
+# wandert ins Fenster und verschwindet danach), und zusätzlich steht da, zu wie
+# vielen Fenstern es wird. Die Fenster-Zählung kostet einen zweiten Scan und
+# läuft deshalb NUR im Trockenlauf — der scharfe Lauf bleibt so schnell wie
+# vorher (gemessen 7,1 s für 3,19 Mio Zeilen).
 def verdichte_roh(conn, tabelle, spec, width, cutoff, trocken):
     """Rohzeilen älter als `cutoff` zu Fenstern der Breite `width` zusammenfassen."""
     roll, keys = spec["rollup"], spec["key"]
@@ -143,15 +155,21 @@ def verdichte_roh(conn, tabelle, spec, width, cutoff, trocken):
               + [a[1] for a in spec["aggregat"]])
     n = conn.execute(
         f"SELECT COUNT(*) FROM {tabelle} WHERE timestamp < ?", (cutoff,)).fetchone()[0]
-    if trocken or n == 0:
-        return n, 0
+    if n == 0:
+        return 0, 0, 0
+    if trocken:
+        fenster = conn.execute(
+            f"SELECT COUNT(*) FROM (SELECT 1 FROM {tabelle} WHERE timestamp < ? "
+            f"GROUP BY {bucket_expr('timestamp', width)}, {', '.join(keys)})",
+            (cutoff,)).fetchone()[0]
+        return n, n, fenster
     conn.execute(
         f"INSERT OR REPLACE INTO {roll} ({', '.join(ziel)}) "
         f"SELECT {', '.join(quelle)} FROM {tabelle} WHERE timestamp < ? "
         f"GROUP BY 1, {', '.join(keys)}", (cutoff,))
     geloescht = conn.execute(
         f"DELETE FROM {tabelle} WHERE timestamp < ?", (cutoff,)).rowcount
-    return n, geloescht
+    return n, geloescht, None
 
 
 def verdichte_stufe(conn, spec, von, nach, cutoff, trocken):
@@ -163,8 +181,15 @@ def verdichte_stufe(conn, spec, von, nach, cutoff, trocken):
     n = conn.execute(
         f"SELECT COUNT(*) FROM {roll} WHERE bucket_sec = ? AND bucket_ts < ?",
         (von, cutoff)).fetchone()[0]
-    if trocken or n == 0:
-        return n, 0
+    if n == 0:
+        return 0, 0, 0
+    if trocken:
+        fenster = conn.execute(
+            f"SELECT COUNT(*) FROM (SELECT 1 FROM {roll} "
+            f"WHERE bucket_sec = ? AND bucket_ts < ? "
+            f"GROUP BY {bucket_expr('bucket_ts', nach)}, {', '.join(keys)})",
+            (von, cutoff)).fetchone()[0]
+        return n, n, fenster
     conn.execute(
         f"INSERT OR REPLACE INTO {roll} ({', '.join(ziel)}) "
         f"SELECT {', '.join(quelle)} FROM {roll} WHERE bucket_sec = ? AND bucket_ts < ? "
@@ -172,7 +197,7 @@ def verdichte_stufe(conn, spec, von, nach, cutoff, trocken):
     geloescht = conn.execute(
         f"DELETE FROM {roll} WHERE bucket_sec = ? AND bucket_ts < ?",
         (von, cutoff)).rowcount
-    return n, geloescht
+    return n, geloescht, None
 
 
 def lauf(trocken=False):
@@ -197,20 +222,25 @@ def lauf(trocken=False):
             continue
 
         cutoff = schranke(conn, f"-{p['raw_hours']} hours")
-        gelesen, weg = verdichte_roh(conn, tabelle, spec, stufen[0][0], cutoff, trocken)
+        gelesen, weg, fenster = verdichte_roh(
+            conn, tabelle, spec, stufen[0][0], cutoff, trocken)
         geloescht_gesamt += weg
-        eintrag["schritte"].append(
-            {"von": "roh", "nach_sec": stufen[0][0], "aelter_als": cutoff,
-             "gelesen": gelesen, "geloescht": weg})
+        schritt = {"von": "roh", "nach_sec": stufen[0][0], "aelter_als": cutoff,
+                   "gelesen": gelesen, "geloescht": weg}
+        if fenster is not None:
+            schritt["verdichtet_zu_fenstern"] = fenster
+        eintrag["schritte"].append(schritt)
 
         for i in range(len(stufen) - 1):
             (w_von, d_von), (w_nach, _) = stufen[i], stufen[i + 1]
             c = schranke(conn, f"-{d_von} days")
-            gelesen, weg = verdichte_stufe(conn, spec, w_von, w_nach, c, trocken)
+            gelesen, weg, fenster = verdichte_stufe(conn, spec, w_von, w_nach, c, trocken)
             geloescht_gesamt += weg
-            eintrag["schritte"].append(
-                {"von_sec": w_von, "nach_sec": w_nach, "aelter_als": c,
-                 "gelesen": gelesen, "geloescht": weg})
+            schritt = {"von_sec": w_von, "nach_sec": w_nach, "aelter_als": c,
+                       "gelesen": gelesen, "geloescht": weg}
+            if fenster is not None:
+                schritt["verdichtet_zu_fenstern"] = fenster
+            eintrag["schritte"].append(schritt)
 
         w_letzte, d_letzte = stufen[-1]
         c = schranke(conn, f"-{d_letzte} days")
@@ -222,7 +252,7 @@ def lauf(trocken=False):
             weg = conn.execute(
                 f"DELETE FROM {spec['rollup']} WHERE bucket_sec=? AND bucket_ts<?",
                 (w_letzte, c)).rowcount
-            geloescht_gesamt += weg
+        geloescht_gesamt += weg
         eintrag["schritte"].append(
             {"endgueltig_geloescht_sec": w_letzte, "aelter_als": c, "zeilen": weg})
         bericht["tabellen"][tabelle] = eintrag
@@ -236,7 +266,7 @@ def lauf(trocken=False):
         else:
             n = conn.execute(
                 f"DELETE FROM {tabelle} WHERE {spalte} < ?", (c,)).rowcount
-            geloescht_gesamt += n
+        geloescht_gesamt += n
         bericht["tabellen"][tabelle] = {"unveraendert_aufbewahrt_tage": p["events_days"],
                                         "geloescht": n}
 

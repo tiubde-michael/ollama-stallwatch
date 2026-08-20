@@ -73,3 +73,36 @@ tiers = [[5, 7], [60, 360]]      # [bucket seconds, keep days] — coarser downw
 events_days = 360                # ollama_requests + stall_events: delete only
 stalls_days = 360                # stack dumps on disk
 vacuum_min_deleted = 100000      # VACUUM locks the file — only when it pays off
+
+# ---------------------------------------------------------------- stack_check
+# Optional. Fehlt dieser Block, gelten die ti-30-Vorgaben aus
+# tests/stack_check.py — auf ti-30 ist er deshalb ueberfluessig.
+#
+# Er existiert wegen fA-439: auf ti11 rissen 8 von 25 Pruefungen, ALLE ACHT
+# wegen ti-30-Annahmen im Skript, bei nachweislich korrekter Konfiguration des
+# laufenden Containers. Ein Check, der einen gesunden Host als "NICHT
+# BETRIEBSBEREIT" meldet, verleitet zum Eingriff in genau die Konfiguration,
+# die er schuetzen soll.
+#
+# Werte, die je Host abweichen duerfen:
+#
+# [stack_check]
+# container = ["ollama", "open-webui", "tei-embed", "tei-reranker"]
+# dienste   = ["ollama-gpu-logger", "ollama-log-parser",
+#              "ollama-process-logger", "ollama-stall-detector",
+#              "ollama-dashboard"]
+# modell_klinisch  = "alibayram/medgemma:27b"
+# modell_agentisch = "qwen3.6:35b-a3b-q4_K_M"
+# ollama_url = "http://127.0.0.1:11434"
+# log_max_size = "25m"     # Flotten-Standard, siehe STANDARD.md §1
+# log_max_file = "4"
+#
+# [stack_check.soll_env]
+# OLLAMA_CONTEXT_LENGTH   = "131072"
+# OLLAMA_NUM_PARALLEL     = "2"
+# OLLAMA_MAX_LOADED_MODELS = "2"
+# OLLAMA_FLASH_ATTENTION  = "1"   # "1" und "true" gelten als gleichwertig
+#
+# soll_env wird am LAUFENDEN Container gemessen (`docker exec ... env`), nicht
+# aus der Compose-Datei gelesen — die Datei ist die Absicht, der Prozess ist
+# der Betrieb. Deshalb ist die Compose-Syntax (Abbildung oder Liste) egal.

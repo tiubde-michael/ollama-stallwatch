@@ -55,12 +55,20 @@ done
 
 echo
 echo "Log-Deckel — der eigentliche Zweck des Termins"
+# Feldweise abfragen statt die JSON-Zeile mit einem Muster abklopfen.
+# Die erste Fassung prüfte mit `case "$CFG" in *25m*4*)` und meldete am 20.08.
+# an fünf KORREKT konfigurierten Containern einen Fehler: Docker gibt
+# {"max-file":"4","max-size":"25m"} aus — die 4 steht vor der 25m, das Muster
+# verlangte die andere Reihenfolge. Ein Textmuster über strukturierte Ausgabe
+# prüft die Formatierung, nicht den Wert.
 for c in ollama openwebui tei-embed tei-rerank rerank-adapter; do
-  CFG=$(docker inspect "$c" --format '{{json .HostConfig.LogConfig}}' 2>/dev/null)
-  case "$CFG" in
-    *25m*4*) ok "$c: $CFG" ;;
-    *)       fail "$c: Deckel NICHT aktiv -> $CFG" ;;
-  esac
+  GROESSE=$(docker inspect "$c" --format '{{index .HostConfig.LogConfig.Config "max-size"}}' 2>/dev/null)
+  DATEIEN=$(docker inspect "$c" --format '{{index .HostConfig.LogConfig.Config "max-file"}}' 2>/dev/null)
+  if [ "$GROESSE" = "25m" ] && [ "$DATEIEN" = "4" ]; then
+    ok "$c: max-size=$GROESSE max-file=$DATEIEN"
+  else
+    fail "$c: Deckel NICHT aktiv -> max-size='${GROESSE:-fehlt}' max-file='${DATEIEN:-fehlt}'"
+  fi
 done
 
 echo

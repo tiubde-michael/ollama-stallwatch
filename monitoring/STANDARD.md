@@ -195,10 +195,52 @@ gelöschte Zeilen je Tabelle) — **auch wenn er scheitert**. Ohne das wäre ein
 gescheiterter Lauf von einem nie gestarteten nicht zu unterscheiden.
 
 **Jede stille Fehlerquelle bekommt eine Prüfung in `tests/stack_check.py`.**
-Derzeit zwei:
+Derzeit drei:
 
 * *Retention lief in den letzten 25 h* — liest `maintenance_log`.
 * *docker logs von vorn lesbar* — vergleicht `--tail` gegen `--since`.
+* *Log-Deckel je Container* — liest `HostConfig.LogConfig`, weil die Option
+  gesetzt sein kann, ohne dass sie am laufenden Container greift.
+
+**Ein Dienst, der immer laufen soll, bekommt `Restart=always` — nicht
+`on-failure`.** Ein Sammler, der sich beendet, weil sein Container gerade nicht
+da ist, endet mit **Exit 0**; `on-failure` holt ihn dann nie zurück. Gemessen
+ti-30 20.08.2026: nach einem Neustart lief `ollama-log-parser` 123 ms, meldete
+„container 'ollama' not present, exiting cleanly" und blieb **drei Stunden tot**,
+während `systemctl` ihn als `enabled` führte. Die Request-Zeilen dieser drei
+Stunden fehlen dauerhaft. Gegenprobe an einer Wegwerf-Unit: `Restart=always` mit
+`/bin/sh -c 'exit 0'` ergab fünf Neustarts in sechs Sekunden — `on-failure`
+hätte keinen einzigen gemacht.
+
+**Kein Textmuster auf strukturierte Ausgabe.** Die erste Fassung der
+Deckel-Prüfung klopfte die JSON-Zeile von `docker inspect` mit dem Glob
+`*25m*4*` ab und meldete an fünf **korrekt konfigurierten** Containern einen
+Fehler: Docker gibt `{"max-file":"4","max-size":"25m"}` aus, die 4 steht vor der
+25m. Geprüft wurde damit die Reihenfolge der Felder, nicht ihr Inhalt. Wer
+strukturierte Ausgabe hat, liest sie feldweise — `--format '{{index …}}'` in der
+Shell, `json.loads` in Python.
+
+**Ein Trockenlauf muss die Wirkung zeigen, nicht die Arbeit.** `--trocken` gab
+anfangs stur `geloescht: 0` bei `gelesen: 455430` aus. ti11-Ops hat sich zu Recht
+nicht darauf verlassen und stattdessen scharf gegen die Sicherungskopie gefahren
+(fA-439). Nach unserem eigenen Maßstab war das eine Prüfung, die im Erfolgsfall
+aussieht wie im Fehlerfall. Jetzt meldet die Vorschau, was gelöscht **würde**,
+und zu wie vielen Fenstern verdichtet wird; gegengeprüft am 20.08. auf einer
+Kopie — Vorschau und scharfer Lauf stimmten in jedem Schritt und in der Summe
+(8.582 Zeilen) überein.
+
+**Eine Prüfung darf nicht die Eigenheiten EINES Hosts als Sollzustand
+behaupten.** Auf ti11 rissen 8 von 25 Prüfungen, alle acht wegen ti-30-Annahmen
+im Skript — bei nachweislich korrekter Konfiguration des laufenden Containers.
+Die Meldung „NICHT BETRIEBSBEREIT: OLLAMA_CONTEXT_LENGTH = 131072" las sich wie
+die Aufforderung, an einer gesunden Produktivkonfiguration zu drehen. **Ein
+Check, der zum Eingriff in einen gesunden Zustand auffordert, ist schädlicher
+als gar kein Check.** Konsequenz: Pfade kommen aus `config.toml`, Container- und
+Modellnamen aus dessen optionalem `[stack_check]`-Block, und Sollwerte werden am
+**laufenden Container** gemessen (`docker exec … env`) statt aus der
+Compose-Datei gelesen — die Datei ist die Absicht, der Prozess ist der Betrieb.
+Nebenwirkung, die den Aufwand allein schon trägt: `1` und `true` gelten für
+Ollama-Schalter als gleichwertig, weil sie es sind.
 
 **Zeitvergleiche in SQL nie mit `datetime('now', …)`.** Gespeichert wird
 `2026-08-20T10:45:41Z`, `datetime()` liefert `2026-08-20 10:45:41`. Verglichen
@@ -244,11 +286,37 @@ docker`. Der Deckel greift erst beim Neuerzeugen eines Containers — auf einer
 Maschine im klinischen Betrieb ist das ein abgestimmter Termin, keine
 Handbewegung.
 
-### Was ti11 noch angleichen muss
+**Nach `docker compose down` kommen die Container nicht von allein zurück.**
+`restart: unless-stopped` greift nur für Container, die es noch gibt — `down`
+entfernt sie. Gemessen ti-30 20.08.2026: nach dem Wartungsfenster stand der Stack
+drei Stunden, weil das Hochholen ein Handschritt war, den niemand ausführte.
+Wer `down` fährt, plant das Hochfahren als eigenen, terminierten Schritt ein.
 
-ti11 fährt derzeit `max-size 100m` × `max-file 3` = **300 MB** je Container. Für
-den Standard sind es **25m × 4 = 100 MB**. Solange das auseinanderläuft, ist es
-kein Standard, sondern zwei Einstellungen.
+### Stand ti11 (erledigt 20.08.2026)
+
+ti11 ist angeglichen: `25m × 4` in `daemon.json` und allen neun Compose-Diensten,
+Cron-Eintrag entfernt, Timer aktiv, gestufte Aufbewahrung übernommen, `[gpu]` auf
+1 Hz. Datenbank 61,3 MB → **27,6 MB**, `ollama_requests` und `stall_events`
+unverändert. Split-Beweis gegengeprüft: im 60-s-Fenster steht Mittelwert 17.686
+MiB neben Maximum **32.400** MiB — die Spitze überlebt die Verdichtung.
+
+**Gegenprobe V100:** `nvidia-smi --loop-ms` läuft dort sauber; der Einzelaufruf
+kostet im Median **27 ms** (ti-30: ~29 ms auf 3090 Ti / 5060 Ti), also ~2,7 %
+eines Kerns bei 1 Hz. `STREAM_THRESHOLD_SEC` musste nicht greifen.
+
+Drei Korrekturen von ti11-Ops an der ersten Fassung dieses Standards, hier
+eingearbeitet:
+
+* Die **2,49-GB-Datenbank ist `vram_metrics.db` von `cobol-bench` auf
+  ti-nas-06** (fA-432), nicht ti11s `monitor.db` — die war 61 MB.
+* **ti11 tastete nicht mit 1 Hz ab**, sondern mit 10 s (~479 Messpunkte/h). Der
+  1-Hz-Poller ist `cobol-bench` von außen, nicht der lokale Collector.
+* Der Cron-Eintrag hatte dort einen **zweiten** Defekt: einen falschen DB-Pfad
+  (`monitoring/monitor.db` statt `monitoring/monitoring/monitor.db`, weil das
+  Repo eine Ebene tiefer liegt). Selbst mit repariertem crontab-Format hätte der
+  Job eine leere Datenbank angelegt und 0 Zeilen gelöscht — **erfolgreich, und
+  wirkungslos.** Derselbe fehlende Pfad legte auch den Retention-Wächter in
+  `stack_check.py` still lahm; beides ist mit dem `config.toml`-Pfad behoben.
 
 ---
 

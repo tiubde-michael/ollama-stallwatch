@@ -16,6 +16,26 @@ Konfiguration, sondern misst nach, wo das billig geht.
 
 Exit 0 = alles im Soll · 1 = mindestens eine harte Prüfung gerissen
        · 2 = nur weiche Hinweise.
+
+Auf mehreren Hosts (fA-439)
+---------------------------
+Nichts hier ist mehr auf ti-30 festgenagelt. Pfade kommen aus
+`monitoring/config.toml`, Container- und Modellnamen aus dessen optionalem
+`[stack_check]`-Block; fehlt er, gelten die ti-30-Werte als Vorgabe.
+
+Der Grund ist ein Befund von ti11-Ops: dort rissen 8 von 25 Prüfungen, **alle
+acht waren ti-30-Annahmen** — andere Containernamen, das Repo eine Ebene tiefer
+als das hartkodierte `/srv/Container`, Listen- statt Abbildungs-Syntax in der
+Compose-Datei. Der laufende Container hatte dabei jeden einzelnen Sollwert
+exakt. Das Skript meldete trotzdem „NICHT BETRIEBSBEREIT:
+OLLAMA_CONTEXT_LENGTH = 131072" — und las sich damit wie die Aufforderung, an
+einer korrekten Produktivkonfiguration zu drehen. Ein Check, der zum Eingriff
+in einen gesunden Zustand auffordert, ist schädlicher als gar kein Check.
+
+Deshalb wird der Ist-Zustand jetzt am **laufenden Container** gemessen
+(`docker exec … env`) statt aus der Compose-Datei gelesen. Die Compose-Datei ist
+die Absicht, der Prozess ist die Wirklichkeit — und nur die zweite trägt den
+Betrieb. Die Datei bleibt als weicher Abgleich daneben stehen.
 """
 
 from __future__ import annotations
@@ -29,32 +49,80 @@ import sqlite3
 import subprocess
 import sys
 import time
+import tomllib
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 
-COMPOSE = "/srv/Container/docker-compose.yml"
-REPO = "/srv/Container"
-OLLAMA = "http://127.0.0.1:11434"
-DASHBOARD = "http://127.0.0.1:3002"
+REPO = Path(__file__).resolve().parent.parent
+MONITORING = REPO / "monitoring"
 
-CONTAINER = ["ollama", "openwebui", "tei-embed", "tei-rerank", "rerank-adapter"]
-DIENSTE = ["ollama-gpu-logger", "ollama-log-parser", "ollama-process-logger",
-           "ollama-stall-detector", "ollama-dashboard"]
-
-# Modelle, die den Betrieb tragen. Klinisch = das Modell, dessen Antworten sich
-# nicht ändern dürfen; agentisch = das Modell für Studio-/Agenten-Last.
-MODELL_KLINISCH = "alibayram/medgemma:27b"
-MODELL_AGENTISCH = "qwen3.6:35b-a3b-q4_K_M"
-
-# Soll-Werte aus docker-compose.yml. Weichen sie ab, hat jemand die Maschine
-# umkonfiguriert — unabhängig davon, ob das absichtlich war.
-SOLL_ENV = {
-    "OLLAMA_CONTEXT_LENGTH": "131072",
-    "OLLAMA_NUM_PARALLEL": "2",
-    "OLLAMA_MAX_LOADED_MODELS": "2",
-    "OLLAMA_FLASH_ATTENTION": "1",
+# ti-30-Vorgaben. Sie gelten nur, solange config.toml nichts anderes sagt.
+STANDARD = {
+    "container": ["ollama", "openwebui", "tei-embed", "tei-rerank", "rerank-adapter"],
+    "dienste": ["ollama-gpu-logger", "ollama-log-parser", "ollama-process-logger",
+                "ollama-stall-detector", "ollama-dashboard"],
+    # Modelle, die den Betrieb tragen. Klinisch = das Modell, dessen Antworten
+    # sich nicht ändern dürfen; agentisch = das Modell für Studio-/Agenten-Last.
+    "modell_klinisch": "alibayram/medgemma:27b",
+    "modell_agentisch": "qwen3.6:35b-a3b-q4_K_M",
+    # Weichen diese Werte ab, hat jemand die Maschine umkonfiguriert —
+    # unabhängig davon, ob das absichtlich war.
+    "soll_env": {
+        "OLLAMA_CONTEXT_LENGTH": "131072",
+        "OLLAMA_NUM_PARALLEL": "2",
+        "OLLAMA_MAX_LOADED_MODELS": "2",
+        "OLLAMA_FLASH_ATTENTION": "1",
+    },
+    # Flotten-Standard, siehe monitoring/STANDARD.md §1.
+    "log_max_size": "25m",
+    "log_max_file": "4",
 }
+
+
+def lade_config() -> dict:
+    """config.toml nur lesen — ohne Seiteneffekte.
+
+    Bewusst NICHT über `monitoring/db.py`: dessen `connect()` legt beim Import
+    Tabellen an und braucht Schreibrecht. Ein Zustands-Check darf den Zustand
+    nicht verändern, den er prüft.
+    """
+    pfad = MONITORING / "config.toml"
+    if not pfad.exists():
+        return {}
+    try:
+        with open(pfad, "rb") as f:
+            return tomllib.load(f)
+    except Exception as e:  # noqa: BLE001
+        print(f"  [WARN] {pfad} nicht lesbar ({type(e).__name__}: {e}) — "
+              f"es gelten die eingebauten ti-30-Vorgaben")
+        return {}
+
+
+CFG = lade_config()
+SC = CFG.get("stack_check", {})
+
+
+def _pfad(p: str) -> Path:
+    """Relative Angaben lösen gegen monitoring/ auf — wie in db.py."""
+    q = Path(p)
+    return q if q.is_absolute() else (MONITORING / q).resolve()
+
+
+DB = _pfad(CFG.get("db_path", "monitor.db"))
+COMPOSE = _pfad(CFG.get("ollama", {}).get("compose_file", "../docker-compose.yml"))
+OLLAMA_CONTAINER = CFG.get("ollama", {}).get("container_name", "ollama")
+OLLAMA = SC.get("ollama_url", "http://127.0.0.1:11434")
+DASHBOARD = f"http://127.0.0.1:{CFG.get('api', {}).get('port', 3002)}"
+
+CONTAINER = SC.get("container", STANDARD["container"])
+DIENSTE = SC.get("dienste", STANDARD["dienste"])
+MODELL_KLINISCH = SC.get("modell_klinisch", STANDARD["modell_klinisch"])
+MODELL_AGENTISCH = SC.get("modell_agentisch", STANDARD["modell_agentisch"])
+SOLL_ENV = SC.get("soll_env", STANDARD["soll_env"])
+LOG_MAX_SIZE = SC.get("log_max_size", STANDARD["log_max_size"])
+LOG_MAX_FILE = str(SC.get("log_max_file", STANDARD["log_max_file"]))
 
 ERG: list[dict] = []
 
@@ -108,24 +176,88 @@ def check_dienste() -> None:
 
 
 # ------------------------------------------------------- Konfigurations-Drift
-def check_konfig() -> None:
-    print("\nKonfiguration")
-    rc, out = sh("git", "-C", REPO, "status", "--porcelain", "docker-compose.yml")
-    pruefe("docker-compose.yml unverändert gegenüber git", True, out == "",
-           "lokal geändert: " + out if out else "sauber")
+# Ollama nimmt für Schalter mehrere Schreibweisen an. `FLASH_ATTENTION=1` und
+# `=true` sind derselbe Zustand — ti11 fährt die zweite Fassung. Ein Check, der
+# hier auf Textgleichheit besteht, meldet eine Abweichung, die keine ist.
+WAHR = {"1", "true", "yes", "on", "t"}
+FALSCH = {"0", "false", "no", "off", "f"}
 
-    try:
-        text = open(COMPOSE, encoding="utf-8").read()
-    except OSError as e:
-        pruefe("docker-compose.yml lesbar", True, False, str(e))
+
+def gleichwertig(ist: str, soll: str) -> bool:
+    a, b = ist.strip().strip('"').lower(), soll.strip().strip('"').lower()
+    if a == b:
+        return True
+    if a in WAHR and b in WAHR:
+        return True
+    if a in FALSCH and b in FALSCH:
+        return True
+    try:                       # "131072" == "131072.0" == " 131072 "
+        return float(a) == float(b)
+    except ValueError:
+        return False
+
+
+def check_konfig() -> None:
+    """Soll-Werte am LAUFENDEN Container messen, nicht in der Datei lesen.
+
+    Die Compose-Datei ist die Absicht, der Prozess ist die Wirklichkeit. Auf
+    dieser Maschine sind sie dreimal auseinandergefallen, ohne dass etwas
+    scheiterte. Und die Datei allein zu lesen ist auf einem anderen Host schlicht
+    falsch: ti11 schreibt `- SCHLUESSEL=${WERT}` mit den Werten in `.env`, wo
+    dieser Check früher `SCHLUESSEL:` suchte und „fehlt" meldete (fA-439).
+    """
+    print("\nKonfiguration (gemessen am laufenden Container)")
+    rc, out = sh("docker", "exec", OLLAMA_CONTAINER, "env", timeout=30)
+    if rc != 0:
+        pruefe(f"env aus Container {OLLAMA_CONTAINER} lesbar", True, False, out[:120])
         return
+    ist_env = dict(z.split("=", 1) for z in out.splitlines() if "=" in z)
     for schluessel, soll in SOLL_ENV.items():
-        ist = ""
-        for zeile in text.splitlines():
-            if zeile.strip().startswith(schluessel + ":"):
-                ist = zeile.split(":", 1)[1].strip().strip('"')
-                break
-        pruefe(f"{schluessel} = {soll}", True, ist == soll, f"ist: {ist or 'fehlt'}")
+        ist = ist_env.get(schluessel, "")
+        pruefe(f"{schluessel} = {soll}", True, gleichwertig(ist, str(soll)),
+               f"ist: {ist or 'fehlt'}")
+
+    # Die Datei daneben — WEICH. Eine Abweichung ist ein Hinweis, dass der
+    # nächste Neubau des Containers etwas anderes tut als der laufende; sie ist
+    # kein Grund, den gesunden Betrieb als „nicht betriebsbereit" zu melden.
+    rc, out = sh("git", "-C", str(REPO), "status", "--porcelain", "docker-compose.yml")
+    if rc != 0 and "not a git repository" in out.lower():
+        pruefe("docker-compose.yml unverändert gegenüber git", False, True,
+               "kein git-Repo — Abgleich entfällt")
+    else:
+        pruefe("docker-compose.yml unverändert gegenüber git", False, out == "",
+               "lokal geändert: " + out if out else "sauber")
+
+
+def check_log_deckel() -> None:
+    """Greift der 100-MB-Deckel wirklich? (Flotten-Standard, STANDARD.md §1)
+
+    `json-file` rotiert von Haus aus NICHT, und der Deckel greift erst beim
+    NEUERZEUGEN eines Containers — ein Neustart genügt nicht. Wer die Option
+    setzt und die Container nur neu startet, glaubt sich abgesichert und ist es
+    nicht.
+
+    Gelesen wird als JSON, nicht als Textmuster. Die erste Fassung dieses Checks
+    (in `nach-reboot.sh`) prüfte mit dem Glob `*25m*4*` und meldete am 20.08. an
+    fünf korrekt konfigurierten Containern einen Fehler: Docker gibt `max-file`
+    VOR `max-size` aus, das Muster verlangte die andere Reihenfolge.
+    """
+    print("\nLog-Deckel")
+    for c in CONTAINER:
+        rc, out = sh("docker", "inspect", c, "--format", "{{json .HostConfig.LogConfig}}")
+        if rc != 0:
+            pruefe(f"Log-Deckel {c}", False, False, "Container nicht vorhanden")
+            continue
+        try:
+            conf = (json.loads(out) or {}).get("Config") or {}
+        except json.JSONDecodeError:
+            pruefe(f"Log-Deckel {c}", False, False, f"unlesbar: {out[:60]}")
+            continue
+        groesse, dateien = conf.get("max-size", ""), conf.get("max-file", "")
+        pruefe(f"Log-Deckel {c}", False,
+               groesse == LOG_MAX_SIZE and dateien == LOG_MAX_FILE,
+               f"max-size={groesse or 'fehlt'} max-file={dateien or 'fehlt'}"
+               + ("" if groesse else " — Container neu erzeugen, nicht neu starten"))
 
 
 # --------------------------------------------------------------------- Ollama
@@ -206,9 +338,16 @@ def check_aufraeumen() -> None:
     print("\nAufräumen und Logs")
 
     # 1) Retention: der letzte Lauf muss jünger als 25 h sein (Timer läuft täglich).
-    db = os.path.join(REPO, "monitoring", "monitor.db")
+    # `DB` kommt aus config.toml. Vorher stand hier ein Pfad, der aus einem
+    # hartkodierten Repo-Ort gebaut wurde — auf ti11 liegt das Repo eine Ebene
+    # tiefer, die Datei wurde nicht gefunden, und genau dieser Wächter meldete
+    # „monitor.db fehlt", während die Retention tatsächlich lief (fA-439).
+    # Ein Wächter, der Fehlalarm gibt, kann den echten Ausfall nicht mehr davon
+    # unterscheiden — und der echte Ausfall ist der, den es hier zu fangen gilt.
+    db = str(DB)
     if not os.path.exists(db):
-        pruefe("Retention lief in den letzten 25 h", False, False, "monitor.db fehlt")
+        pruefe("Retention lief in den letzten 25 h", False, False,
+               f"{db} fehlt — db_path in monitoring/config.toml prüfen")
     else:
         try:
             conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
@@ -239,7 +378,7 @@ def check_aufraeumen() -> None:
     # Datei, damit waren 99 % des Logs unerreichbar.
     if shutil.which("docker") is None:
         return
-    rc, out = sh("docker", "logs", "--tail", "1", "ollama", timeout=60)
+    rc, out = sh("docker", "logs", "--tail", "1", OLLAMA_CONTAINER, timeout=60)
     # Format der Ollama-Zeilen: "[GIN] 2026/08/20 - 10:52:49 | …" — zwischen
     # Datum und Uhrzeit steht " - ", nicht nur "T" oder ein Leerzeichen.
     treffer = re.search(
@@ -261,7 +400,7 @@ def check_aufraeumen() -> None:
     # nichts mehr hergibt, ohne das je zu melden. Gemessen ti-30/ti11 20.08.2026.
     if not frisch:
         return
-    rc, out2 = sh("docker", "logs", "--since", "10m", "ollama", timeout=180)
+    rc, out2 = sh("docker", "logs", "--since", "10m", OLLAMA_CONTAINER, timeout=180)
     zeilen = len([z for z in out2.splitlines() if z.strip()])
     pruefe("docker logs von vorn lesbar", False, zeilen > 0,
            f"--since 10m liefert {zeilen} Zeilen"
@@ -271,7 +410,7 @@ def check_aufraeumen() -> None:
 
 def check_platte() -> None:
     print("\nSystem")
-    rc, out = sh("df", "--output=pcent,avail", "-h", REPO)
+    rc, out = sh("df", "--output=pcent,avail", "-h", str(REPO))
     zeile = out.splitlines()[-1].strip() if out else ""
     belegt = int(zeile.split("%")[0]) if "%" in zeile else 0
     pruefe("Plattenplatz unter 85 %", False, belegt < 85, zeile)
@@ -287,6 +426,7 @@ def main() -> int:
     check_container()
     check_dienste()
     check_konfig()
+    check_log_deckel()
     check_ollama(a.schnell)
     check_monitoring()
     check_aufraeumen()
