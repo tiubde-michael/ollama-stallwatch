@@ -332,6 +332,22 @@ eingearbeitet:
   hat; sauber ist es nicht. Nebenwirkung: `git pull` kann diese Dateien als
   `ollama_admin` nicht aktualisieren. **Rechte sind Tabu-Klasse — gemeldet,
   nicht geändert.**
+
+  **Konkrete Falle, gemessen 20.08.2026: `git checkout` wechselt den Branch
+  trotzdem.** Er kann die root-eigenen Collector-Dateien nicht zurücksetzen,
+  bricht deswegen aber nicht ab — Ergebnis war ein halb umgestellter
+  Arbeitsbaum: `HEAD` auf dem Zielbranch, vier Dateien von der Platte
+  verschwunden (darunter `retention.py`, auf die der Timer zeigt), zwei
+  root-eigene noch auf dem alten Stand. Nichts ging verloren, weil alles
+  festgeschrieben war, aber die Dienste liefen minutenlang über Dateien, die
+  es nicht mehr gab. **Auf dieser Maschine den Branch nicht wechseln, solange
+  die Eigentumslage so ist.** Wer `master` nachziehen will, bewegt die Zeiger
+  statt den Arbeitsbaum:
+
+  ```bash
+  git push origin <branch>:master     # Remote vorspulen
+  git update-ref refs/heads/master <sha>   # lokal nachziehen, kein Checkout
+  ```
 * **Das bestehende NUL-Loch auf ti-30.** Verschwindet erst beim Neuerzeugen des
   Containers. Bis dahin gilt: fürs Log der Rohzugriff auf
   `docker inspect ollama --format '{{.LogPath}}'`, nicht `docker logs`.
