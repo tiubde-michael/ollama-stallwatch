@@ -117,6 +117,8 @@ OLLAMA = SC.get("ollama_url", "http://127.0.0.1:11434")
 DASHBOARD = f"http://127.0.0.1:{CFG.get('api', {}).get('port', 3002)}"
 
 CONTAINER = SC.get("container", STANDARD["container"])
+# Optionale Wahl-Sets je Betriebsmodus; ohne den Block ändert sich nichts.
+MODI = SC.get("modi", {})
 DIENSTE = SC.get("dienste", STANDARD["dienste"])
 MODELL_KLINISCH = SC.get("modell_klinisch", STANDARD["modell_klinisch"])
 MODELL_AGENTISCH = SC.get("modell_agentisch", STANDARD["modell_agentisch"])
@@ -157,15 +159,49 @@ def poste(url: str, body: dict, timeout: float = 900.0):
 
 # ------------------------------------------------------------------ Container
 def check_container() -> None:
+    """`container` ist Pflicht, `[stack_check.modi]` sind Wahl-Sets.
+
+    Hintergrund (ti11-Ops, fA-439): auf ti11 teilen sich zwei Container-Sets
+    dieselbe Karte, `stack-mode.sh` tauscht sie gegeneinander. Eine feste Liste
+    meldet nach jedem Moduswechsel Fehler — zu Recht, aber aus dem falschen
+    Grund. Ein abgeschaltetes Set ist kein Defekt.
+
+    Bewusst NICHT über einen Schlüssel `modus = "diwa"` gelöst. Das wäre ein
+    Wert, den jemand beim Umschalten mitpflegen muss und der still veraltet —
+    genau die Fehlerklasse, die dieses Skript loswerden sollte. Stattdessen
+    wird der laufende Zustand befragt, und die drei Fälle werden unterschieden:
+
+      alle da   -> in Ordnung, dieses Set ist aktiv
+      keiner da -> Hinweis: anderes Set aktiv, kein Fehler
+      teils da  -> HARTER FEHLER. Ein halb laufendes Set ist kein Moduswechsel,
+                   sondern ein Set im aktiven Modus, aus dem etwas weggebrochen
+                   ist — der Fall, den zu verschweigen am teuersten wäre.
+    """
     print("\nContainer")
     if shutil.which("docker") is None:
         pruefe("docker vorhanden", True, False, "docker nicht im PATH")
         return
     rc, out = sh("docker", "ps", "--format", "{{.Names}}\t{{.Status}}")
     laufend = dict(z.split("\t", 1) for z in out.splitlines() if "\t" in z)
+
+    def laeuft(name: str) -> bool:
+        return laufend.get(name, "").startswith("Up")
+
     for c in CONTAINER:
         st = laufend.get(c, "")
         pruefe(f"Container {c}", True, st.startswith("Up"), st or "läuft nicht")
+
+    for name, satz in MODI.items():
+        da = [c for c in satz if laeuft(c)]
+        fehlt = [c for c in satz if not laeuft(c)]
+        if not fehlt:
+            pruefe(f"Set '{name}' vollständig", True, True, ", ".join(satz))
+        elif not da:
+            pruefe(f"Set '{name}' läuft nicht", False, False,
+                   f"anderer Modus aktiv? keiner von: {', '.join(satz)}")
+        else:
+            pruefe(f"Set '{name}' nur teilweise", True, False,
+                   f"läuft: {', '.join(da)} — fehlt: {', '.join(fehlt)}")
 
 
 def check_dienste() -> None:

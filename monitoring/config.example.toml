@@ -106,3 +106,24 @@ vacuum_min_deleted = 100000      # VACUUM locks the file — only when it pays o
 # soll_env wird am LAUFENDEN Container gemessen (`docker exec ... env`), nicht
 # aus der Compose-Datei gelesen — die Datei ist die Absicht, der Prozess ist
 # der Betrieb. Deshalb ist die Compose-Syntax (Abbildung oder Liste) egal.
+#
+# Wechselnde Container-Sets (fA-439, ti11-Ops)
+# -------------------------------------------
+# `container` oben ist die PFLICHT-Liste: was in jedem Betriebsmodus laufen
+# muss. Teilt sich ein Host mehrere Sets eine Karte und schaltet zwischen
+# ihnen um, kommen die wechselnden Container hierher:
+#
+# [stack_check.modi]
+# diwa  = ["tei-embed", "tei-reranker"]
+# voice = ["faster-whisper-api", "f5-tts", "call-agent"]
+#
+# Geprueft wird je Set der laufende Zustand, nicht ein konfigurierter Modus:
+#
+#   alle da   -> in Ordnung, dieses Set ist aktiv
+#   keiner da -> Hinweis "Set 'voice' laeuft nicht", KEIN Fehler
+#   teils da  -> HARTER FEHLER: ein halb laufendes Set ist kein Moduswechsel,
+#                sondern ein aktives Set, aus dem etwas weggebrochen ist
+#
+# Absichtlich gibt es KEINEN Schluessel `modus = "diwa"`. Der muesste beim
+# Umschalten mitgepflegt werden und wuerde still veralten — genau die
+# Fehlerklasse, die dieses Skript loswerden soll.
