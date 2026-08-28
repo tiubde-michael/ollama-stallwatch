@@ -16,8 +16,11 @@ import time
 import urllib.error
 import urllib.request
 
-GX10_EMBED = "http://192.168.5.185:8001/v1/embeddings"
-GX10_RERANK = "http://192.168.5.185:8082/v1/rerank"
+# gx10-01 ueber Tailscale, nicht ueber die LAN-Adresse: ueberlebt den Umzug nach
+# 192.168.7.0/24 (fA-508). Bitte NICHT auf eine 192.168.x-Adresse zurueckstellen.
+# gx10-01 via Tailscale, not its LAN address — survives the move (fA-508).
+GX10_EMBED = "http://100.123.138.47:8001/v1/embeddings"
+GX10_RERANK = "http://100.123.138.47:8082/v1/rerank"
 TI30_EMBED = "http://localhost:8001/v1/embeddings"
 # rerank-adapter davor spricht dasselbe /v1/rerank-Format wie GX-10.
 TI30_RERANK = "http://localhost:8082/v1/rerank"
@@ -90,8 +93,8 @@ def main() -> int:
     print("=" * 78)
 
     print("\n[1/4] Health-Probe beide Systeme")
-    for label, url in [("GX-10 embed", "http://192.168.5.185:8001/health"),
-                       ("GX-10 rerank", "http://192.168.5.185:8082/health"),
+    for label, url in [("GX-10 embed", "http://100.123.138.47:8001/health"),
+                       ("GX-10 rerank", "http://100.123.138.47:8082/health"),
                        ("TI-30 embed", "http://localhost:8001/health"),
                        ("TI-30 rerank", "http://localhost:8082/health")]:
         status = get(url)
