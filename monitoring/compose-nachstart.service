@@ -1,0 +1,35 @@
+[Unit]
+# Holt den Container-Stack nach dem Boot nach, falls er fehlt (fA-501 K2190).
+# Bauart von gx10-01 uebernommen (fA-507 K2012/K2025): User-Unit statt Drop-in
+# unter /etc/systemd/system/docker.service.d/ — docker.service bleibt im
+# Auslieferungszustand (Michaels Entscheid).
+Description=Container-Stack nach dem Boot nachholen (fA-501)
+Documentation=file:///srv/Container/monitoring/compose-nachstart.sh
+# Kein After=docker.service: das ist eine USER-Unit, die System-Unit ist von hier
+# nicht ordnbar. Das Skript wartet stattdessen selbst auf den Daemon — und zwar
+# auf die Ansprechbarkeit, nicht auf den Unit-Zustand. Auf gx10-01 war genau das
+# der Unterschied zwischen "haette geholfen" und "haette nicht geholfen".
+After=default.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/srv/Container
+ExecStart=/usr/bin/env bash /srv/Container/monitoring/compose-nachstart.sh
+# Grosszuegig: die TEI-Container brauchen auf CPU Anlauf (:8082 am 01.09. erst
+# nach ~3 min). Das Skript gibt trotzdem immer Exit 0 zurueck — diese Unit darf
+# keinen Boot rot faerben.
+TimeoutStartSec=600
+
+[Install]
+WantedBy=default.target
+
+# ---------------------------------------------------------------------------
+# Diese Datei ist die versionierte Quelle. Installiert wird sie als KOPIE:
+#   cp monitoring/compose-nachstart.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable compose-nachstart.service
+# Voraussetzung: `loginctl show-user <user> -p Linger` muss `Linger=yes` sagen,
+# sonst startet die User-Unit beim Booten nicht (auf ti-30 steht sie so).
+# Bewusst KEIN Symlink ins Repo: ein Checkout soll das Startverhalten der
+# klinischen Maschine nicht im Vorbeigehen aendern.
