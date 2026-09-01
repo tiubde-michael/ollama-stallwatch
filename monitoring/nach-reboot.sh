@@ -38,7 +38,11 @@ fi
 
 echo
 echo "Stack starten"
-docker compose up -d 2>&1 | sed 's/^/    /'
+# Nicht `docker compose up -d`: das zieht einen VORHANDENEN Container ohne
+# Port-Mapping wieder hoch (auf gx10-01 gemessen, fA-507 K2012: `Ports: []` —
+# ein Dienst, der auf gruen steht und nicht erreichbar ist). Das Nachstart-
+# Skript unterscheidet die Faelle und nimmt dann `--force-recreate`.
+bash monitoring/compose-nachstart.sh 2>&1 | sed 's/^/    /'
 echo "  warte auf Ollama ..."
 for i in $(seq 1 60); do
   V=$(curl -s -m 3 http://127.0.0.1:11434/api/version 2>/dev/null) && [ -n "$V" ] && break
