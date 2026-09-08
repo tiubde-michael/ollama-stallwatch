@@ -168,7 +168,7 @@ loading one evicts the other; a cold load costs ~92 s.
 **Context limit: Ollama truncates silently.** Prompts beyond `OLLAMA_CONTEXT_LENGTH` do not
 produce an error — the server drops the front of the prompt, answers HTTP 200, and bills exactly
 131072 prompt tokens. Measured 2026-08-07 across 110%/150%/300% of the slot size, 9 of 9 runs
-(eval-gate P6, protocol in `Claude-Austausch/01_Agenten-Studio/eval-gate/messungen/`). Any client
+(eval-gate P6, protocol in `/mnt/austausch/01_Agenten-Studio/eval-gate/messungen/`). Any client
 that needs a hard failure must check the context itself — including tool schemas, which the
 token count does not cover. The same applies one level down: both TEI containers run with
 `--auto-truncate`. Telltale sign in the monitoring DB: `prompt_tokens` stuck at exactly the slot size.
